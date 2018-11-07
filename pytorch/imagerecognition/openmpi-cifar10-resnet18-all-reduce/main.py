@@ -51,7 +51,7 @@ def main(run_id):
     os.makedirs(config['dataset_root'], exist_ok=True)
 
     train_set = CIFAR10V1(config['dataset_root'], train=True, download=True)
-    val_set = CIFAR10V1(config['dataset_root'], train=True, download=True)
+    val_set = CIFAR10V1(config['dataset_root'], train=False, download=True)
 
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
 
