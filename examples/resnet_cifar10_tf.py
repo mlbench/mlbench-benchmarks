@@ -12,21 +12,24 @@ from mlbench_core.evaluation.tensorflow.criterion import \
     softmax_cross_entropy_with_logits_v2_l2_regularized
 
 
-def define_ops_to_run(config, model, data_loader, is_training):
+def define_ops_to_run(model, data_loader, is_training):
     # intermediate ops
     logits = model(data_loader.inputs, is_training)
 
     def loss_filter_fn(name):
         """Filter trainable variables with batch_normalization."""
-        return 'batch_normalization' not in name if not config.l2_reg_bn else True
+        return 'batch_normalization' not in name
 
     loss = softmax_cross_entropy_with_logits_v2_l2_regularized(
-        logits, data_loader.labels, config.l2, loss_filter_fn)
+        logits=logits,
+        labels=data_loader.labels,
+        l2=2e-4,
+        loss_filter_fn=loss_filter_fn)
 
     # Use Top K accuracy as metrics
     metrics = [
-        topk_accuracy_with_logits(logits, data_loader.labels, k=k)
-        for k in [1, 5]
+        topk_accuracy_with_logits(logits, data_loader.labels, k=1),
+        topk_accuracy_with_logits(logits, data_loader.labels, k=5),
     ]
 
     # Define a global_step op which counts the number times gradients have been applied.
@@ -34,13 +37,16 @@ def define_ops_to_run(config, model, data_loader, is_training):
 
     epoch = tf.Variable(0, name='epoch')
     lr_scheduler = manual_stepping(
-        global_step=epoch, boundaries=[82, 109], rates=[0.1, 0.01, 0.001], warmup=False)
+        global_step=epoch,
+        boundaries=[82, 109],
+        rates=[0.1, 0.01, 0.001],
+        warmup=False)
 
     # Define the optimizer
     optimizer = tf.train.MomentumOptimizer(
         learning_rate=lr_scheduler,
-        momentum=config.momentum,
-        use_nesterov=config.nesterov
+        momentum=0.9,
+        use_nesterov=True
     )
 
     # The update_ops is needed if batch normalization is used.
@@ -55,106 +61,58 @@ def define_ops_to_run(config, model, data_loader, is_training):
 
         train_op = tf.group(minimize_op)
 
+    # raise NotImplementedError((train_op), type(train_op))
     return train_op, loss, metrics, epoch
 
 
-def run(config, sess):
-    model = Cifar10Model(config.resnet_size,
-                         config.tf_data_format,
-                         resnet_version=config.resnet_version,
-                         dtype=config.tf_dtype)
+def run(sess):
+    world_size = 1
+    batch_size = 128
+    model = Cifar10Model(resnet_size=20,
+                         data_format='channels_last',
+                         resnet_version=2,
+                         dtype=tf.float32)
 
-    data_loader = DatasetCifar(config)
+    data_loader = DatasetCifar(
+        dataset='cifar-10',
+        dataset_root='/datasets',
+        batch_size=batch_size,
+        world_size=world_size,
+        seed=42,
+        tf_dtype=tf.float32)
 
     is_training = tf.placeholder(tf.bool, (), name='is_training')
 
     train_op, loss, metrics, epoch = define_ops_to_run(
-        config, model, data_loader, is_training)
+        model, data_loader, is_training)
 
     # The placeholders here will be used in the `sess.run`
     cf = ControlFlow(is_training=is_training,
                      train_op=train_op,
                      data_loader=data_loader,
                      sess=sess,
-                     config=config,
                      loss=loss,
-                     metrics=metrics)
+                     metrics=metrics,
+                     lr_scheduler_level='epoch',
+                     max_train_steps=164,
+                     train_epochs=164)
 
     cf.train_and_eval(lr_scheduler=epoch)
 
 
-def main(config):
-    initialize_backends(config)
+def main():
+    initialize_backends(None)
 
-    sess_config = default_session_config(config)
+    sess_config = default_session_config(
+        tf_allow_soft_placement=False,
+        tf_log_device_placement=False,
+        tf_gpu_mem=0.1)
 
     with tf.Graph().as_default():
         sess = tf.Session(config=sess_config)
         with sess.as_default():
-            run(config, sess)
+            run(sess)
 
 
 if __name__ == '__main__':
-    DATASET_CONFIG = {
-        "dataset": "cifar-10",
-        "dataset_version": 1,
-        "dataset_root": "/datasets",
-        "num_parallel_workers": 2,
-        "batch_size": 256,
-        "shuffle_before_partition": True,
-        "num_classes": 10
-    }
-
-    OPTIMIZER_CONFIG = {
-        "momentum": 0.9,
-        "nesterov": True,
-
-        "lr_scheduler_level": "epoch"
-    }
-
-    MOCK_CONFIG = {
-        "world_size": 1,
-        "rank": 0,
-        "seed": 42,
-    }
-
-    TF_LEGACY_CONFIG = {
-        "tf_gpu_thread_mode": True,
-        "inter_op_parallelism_threads": 2,
-        "intra_op_parallelism_threads": 2,
-
-        # 1 if we use tf.float32 and 128 if we use tf.float16
-        "tf_loss_scale": 1,
-
-        "tf_dtype": tf.float32,
-
-        "tf_data_format": "channels_last",
-        "resnet_size": 20,
-        "resnet_version": 1,
-
-        "train_epochs": 164,
-        "max_train_steps": 164,
-        "model_dir": "/checkpoint/tmp",
-        "eval_only": False,
-        "lr": 0.1,
-
-        "data_dir": "/datasets",
-        "datasets_num_private_threads": 1,
-        "export_dir": None,
-        "datasets_num_parallel_batches": 2
-    }
-
-    TF_CONFIG = {
-        "tf_log_device_placement": False,
-        "tf_allow_soft_placement": False,
-        "tf_gpu_mem": 0.1,
-    }
-
-    TMP_CONFIG = {
-        "l2_reg_bn": True,
-        "l2": 2e-4
-    }
-
-    config = types.SimpleNamespace(**DATASET_CONFIG, **TF_CONFIG, **TMP_CONFIG,
-                                   **MOCK_CONFIG, **TF_LEGACY_CONFIG, **OPTIMIZER_CONFIG)
-    main(config)
+    main()
