@@ -3,7 +3,7 @@
 FROM mlbench-pytorch-base:latest
 
 # -------------------- Debug --------------------
-RUN apt-get update && apt-get install -y vim net-tools iproute2
+RUN apt-get update && apt-get install -y vim net-tools
 
 # The reference implementation and user defined implementations are placed here.
 ADD ./requirements.txt /requirements.txt

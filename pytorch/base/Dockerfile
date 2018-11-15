@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     git \
     curl \
-    sudo
+    sudo \
+    iproute2
 
 # -------------------- SSH --------------------
 RUN cat /etc/ssh/ssh_config | grep -v StrictHostKeyChecking > /etc/ssh/ssh_config.new && \
