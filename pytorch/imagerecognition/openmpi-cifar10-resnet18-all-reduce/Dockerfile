@@ -1,13 +1,13 @@
 # ********************************** STAGE 2 **********************************************
 # later we will use the remote ones
-FROM mlbench-pytorch-base:latest
+FROM mlbench/mlbench-pytorch-base:1.0.0
 
 # -------------------- Debug --------------------
 RUN apt-get update && apt-get install -y vim net-tools
 
 # The reference implementation and user defined implementations are placed here.
 ADD ./requirements.txt /requirements.txt
-RUN pip install --no-cache-dir --extra-index-url https://testpypi.python.org/pypi -r /requirements.txt
+RUN pip install --no-cache-dir -r /requirements.txt
 
 RUN mkdir /codes
 ADD ./main.py /codes/main.py
