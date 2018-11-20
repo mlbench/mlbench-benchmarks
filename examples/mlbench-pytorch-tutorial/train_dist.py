@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import os
+import sys
 import argparse
 import torch
 import torch.distributed as dist
@@ -15,6 +16,7 @@ from torch.autograd import Variable
 from torchvision import datasets, transforms
 
 from mlbench_core.api import ApiClient
+import logging
 
 
 class Partition(object):
@@ -85,7 +87,7 @@ def partition_dataset():
             transforms.Normalize((0.1307, ), (0.3081, ))
         ]))
     size = dist.get_world_size()
-    bsz = 128 / float(size)
+    bsz = int(128 / float(size))
     partition_sizes = [1.0 / size for _ in range(size)]
     partition = DataPartitioner(dataset, partition_sizes)
     partition = partition.use(dist.get_rank())
@@ -98,7 +100,7 @@ def average_gradients(model):
     """ Gradient averaging. """
     size = float(dist.get_world_size())
     for param in model.parameters():
-        dist.all_reduce(param.grad.data, op=dist.reduce_op.SUM, group=0)
+        dist.all_reduce(param.grad.data, op=dist.reduce_op.SUM)
         param.grad.data /= size
 
 
@@ -107,8 +109,6 @@ def run(rank, size, run_id):
     torch.manual_seed(1234)
     train_set, bsz = partition_dataset()
     model = Net()
-    model = model
-    # model = model.cuda(rank)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
 
     api_client = ApiClient(
@@ -120,18 +120,16 @@ def run(rank, size, run_id):
     for epoch in range(10):
         epoch_loss = 0.0
         for data, target in train_set:
-            data, target = Variable(data), Variable(target)
-            # data, target = Variable(data.cuda(rank)), Variable(target.cuda(rank))
             optimizer.zero_grad()
             output = model(data)
             loss = F.nll_loss(output, target)
-            epoch_loss += loss.data[0]
+            epoch_loss += loss.data.item()
             loss.backward()
             average_gradients(model)
             optimizer.step()
-        print('Rank ',
-              dist.get_rank(), ', epoch ', epoch, ': ',
-              epoch_loss / num_batches)
+        logging.debug('Rank %s, epoch %s: %s',
+            dist.get_rank(), epoch,
+            epoch_loss / num_batches)
 
         api_client.post_metric(
             run_id,
@@ -145,7 +143,9 @@ def init_processes(rank, run_id, hosts, backend='gloo'):
     os.environ['MASTER_ADDR'] = hosts[0] # first worker is the master worker
     os.environ['MASTER_PORT'] = '29500'
     world_size = len(hosts)
-    dist.init_process_group(backend, rank=rank, world_size=len(world_size))
+    os.environ['WORLD_SIZE'] = str(world_size)
+    os.environ['RANK'] = str(rank)
+    dist.init_process_group(backend, rank=rank, world_size=world_size)
     run(rank, world_size, run_id)
 
 
@@ -155,4 +155,7 @@ if __name__ == "__main__":
     parser.add_argument('--rank', type=int, help='The rank of this worker')
     parser.add_argument('--hosts', type=str, help='The list of hosts')
     args = parser.parse_args()
+    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+    logging.info("Started Training with {}".format(str(args)))
+
     init_processes(args.rank, args.run_id, args.hosts)

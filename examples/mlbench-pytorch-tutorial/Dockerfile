@@ -1,4 +1,4 @@
-FROM mlbench-pytorch-base:latest
+FROM mlbench/mlbench-pytorch-base:latest
 
 RUN pip install --extra-index-url https://testpypi.python.org/pypi mlbench-core
 
@@ -8,5 +8,7 @@ RUN pip install --extra-index-url https://testpypi.python.org/pypi mlbench-core
 
 RUN mkdir /codes
 ADD ./train_dist.py /codes/train_dist.py
+
+EXPOSE 29500
 
 ENV PYTHONPATH /codes
