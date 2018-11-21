@@ -1,118 +1,254 @@
-r"""Create a Resnet Model and Output something."""
-import types
+r"""Distributed TensorFlow with Monitored Training Session.
+
+Adapted from official tutorial::
+
+    https://www.tensorflow.org/deploy/distributed
+
+Launch::
+
+    mpirun -n 3 --allow-run-as-root python ....
+
+"""
+import argparse
+import logging
+import os
 import tensorflow as tf
+from mpi4py import MPI
+
 
 from mlbench_core.utils.tensorflow import initialize_backends, default_session_config
 from mlbench_core.models.tensorflow.resnet_model import Cifar10Model
 from mlbench_core.dataset.imagerecognition.tensorflow.cifar10 import DatasetCifar
-from mlbench_core.controlflow.tensorflow.train_and_eval import ControlFlow
 from mlbench_core.lr_scheduler.tensorflow.lr import manual_stepping
 from mlbench_core.evaluation.tensorflow.metrics import topk_accuracy_with_logits
 from mlbench_core.evaluation.tensorflow.criterion import \
     softmax_cross_entropy_with_logits_v2_l2_regularized
+from mlbench_core.controlflow.tensorflow.train_validation import TrainValidation
 
 
-def define_ops_to_run(model, data_loader, is_training):
-    # intermediate ops
-    logits = model(data_loader.inputs, is_training)
+def define_graph(inputs, labels, is_training, batch_size, replicas_to_aggregate):
+    """
+    Define graph for synchronized training.
+    """
+    model = Cifar10Model(
+        resnet_size=20,
+        data_format='channels_last',
+        resnet_version=2,
+        dtype=tf.float32)
 
-    def loss_filter_fn(name):
-        """Filter trainable variables with batch_normalization."""
-        return 'batch_normalization' not in name
+    logits = model(inputs, is_training)
 
     loss = softmax_cross_entropy_with_logits_v2_l2_regularized(
         logits=logits,
-        labels=data_loader.labels,
+        labels=labels,
         l2=2e-4,
-        loss_filter_fn=loss_filter_fn)
+        # Exclude BN weights from L2 regularizer
+        loss_filter_fn=lambda name: 'batch_normalization' not in name)
 
     # Use Top K accuracy as metrics
     metrics = [
-        topk_accuracy_with_logits(logits, data_loader.labels, k=1),
-        topk_accuracy_with_logits(logits, data_loader.labels, k=5),
+        topk_accuracy_with_logits(logits, labels, k=1),
+        topk_accuracy_with_logits(logits, labels, k=5),
     ]
 
-    # Define a global_step op which counts the number times gradients have been applied.
     global_step = tf.train.get_or_create_global_step()
 
-    epoch = tf.Variable(0, name='epoch')
+    # scheduling learning steps.
     lr_scheduler = manual_stepping(
-        global_step=epoch,
-        boundaries=[82, 109],
+        global_step=global_step,
+        boundaries=[32000 // replicas_to_aggregate,
+                    48000 // replicas_to_aggregate],
         rates=[0.1, 0.01, 0.001],
         warmup=False)
 
     # Define the optimizer
-    optimizer = tf.train.MomentumOptimizer(
+    optimizer_ = tf.train.MomentumOptimizer(
         learning_rate=lr_scheduler,
         momentum=0.9,
-        use_nesterov=True
-    )
+        use_nesterov=True)
 
-    # The update_ops is needed if batch normalization is used.
+    # Wrap optimizer with `SyncReplicasOptimizer`
+    optimizer = tf.train.SyncReplicasOptimizer(
+        optimizer_,
+        replicas_to_aggregate=replicas_to_aggregate,
+        total_num_replicas=replicas_to_aggregate)
+
+    hooks = [
+        optimizer.make_session_run_hook((rank == 0), num_tokens=0)
+    ]
+
+    # The update for batch normalization.
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     with tf.control_dependencies(update_ops):
-         # Compute gradients
+        # Not all of the processes contribute one update. Some faster procs can push more updates.
         grads_and_vars = list(optimizer.compute_gradients(
             loss, tf.trainable_variables()))
 
-        minimize_op = optimizer.apply_gradients(
+        train_op = optimizer.apply_gradients(
             grads_and_vars, global_step=global_step)
 
-        train_op = tf.group(minimize_op)
-
-    # raise NotImplementedError((train_op), type(train_op))
-    return train_op, loss, metrics, epoch
+    return train_op, loss, metrics, hooks
 
 
-def run(sess):
-    world_size = 1
+def main(is_ps, rank, world_size, cluster_spec, batch_size, replicas_to_aggregate):
+    logging.info("Initial.")
+
+    job_name = "ps" if is_ps else "worker"
+
+    cluster = tf.train.ClusterSpec(cluster_spec)
+
+    gpu_options = tf.GPUOptions(allow_growth=True,
+                                per_process_gpu_memory_fraction=0.2)
+
+    session_conf = tf.ConfigProto(
+        gpu_options=gpu_options,
+        allow_soft_placement=True,
+        log_device_placement=False)
+
+    server = tf.train.Server(
+        cluster, job_name=job_name, task_index=rank, config=session_conf)
+
+    if is_ps:
+        server.join()
+    else:
+        # Pin variables to parameter server.
+        device_fn = tf.train.replica_device_setter(
+            ps_tasks=None,
+            ps_device="/job:ps",
+            worker_device="/job:{}/task:{}/device:GPU:{}".format(
+                job_name, rank, rank),
+            merge_devices=True,
+            cluster=cluster,
+            ps_ops=None,
+            ps_strategy=None)
+
+        with tf.Graph().as_default():
+            with tf.device(device_fn):
+                data_loader = DatasetCifar(
+                    dataset='cifar-10',
+                    dataset_root='/datasets',
+                    batch_size=batch_size,
+                    world_size=world_size,
+                    rank=rank,
+                    seed=42,
+                    tf_dtype=tf.float32)
+
+                train_op, loss, metrics, hooks = define_graph(
+                    data_loader.inputs,
+                    data_loader.labels,
+                    data_loader.training,
+                    batch_size,
+                    replicas_to_aggregate)
+
+                local_init_op = tf.group(
+                    tf.local_variables_initializer(),
+                    data_loader.train_init_op,
+                    data_loader.validation_init_op)
+
+                scaffold = tf.train.Scaffold(
+                    init_op=None,
+                    init_feed_dict=None,
+                    init_fn=None,
+                    ready_op=None,
+                    ready_for_local_init_op=None,
+                    local_init_op=local_init_op)
+
+                lr_tensor_name = tf.get_default_graph().get_tensor_by_name("learning_rate:0")
+
+            with tf.train.MonitoredTrainingSession(config=session_conf,
+                                                   master=server.target,
+                                                   scaffold=scaffold,
+                                                   is_chief=(rank == 0),
+                                                   checkpoint_dir=None,
+                                                   save_checkpoint_secs=None,
+                                                   save_summaries_steps=None,
+                                                   stop_grace_period_secs=5,
+                                                   hooks=hooks) as sess:
+
+                logging.info("Begin training.")
+
+                cf = TrainValidation(
+                    batch_size=batch_size,
+                    train_set_init_op=data_loader.train_init_op,
+                    validation_set_init_op=data_loader.validation_init_op,
+                    num_batches_per_epoch_for_train=data_loader.num_batches_per_epoch_for_train,
+                    num_batches_per_epoch_for_validation=data_loader.num_batches_per_epoch_for_eval,
+                    train_op=train_op,
+                    sess=sess,
+                    loss=loss,
+                    metrics=metrics,
+                    lr_scheduler_level='epoch',
+                    max_train_steps=164,
+                    train_epochs=164)
+
+                cf.train_and_eval(lr_tensor_name=lr_tensor_name)
+
+            logging.info("Finish.")
+
+
+def configure_logger(log_dir, is_ps, rank):
+    logger = logging.getLogger('')
+    logger.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter(
+        '{:6} rank={} : %(message)s'.format("ps" if is_ps else "worker", rank),
+        "%Y-%m-%d %H:%M:%S")
+
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    log_name = '{}-{}.log'.format("ps" if is_ps else "worker", rank)
+    log_name = os.path.join(log_dir, log_name)
+    if os.path.exists(log_name):
+        os.remove(log_name)
+
+    fh = logging.FileHandler(log_name)
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.register("type", "bool", lambda v: v.lower() == "true")
+
+    # Flags for defining the tf.train.ClusterSpec
+    parser.add_argument(
+        "--ps_hosts",
+        type=str,
+        default="localhost:2224",
+        help="Comma-separated list of hostname:port pairs"
+    )
+    parser.add_argument(
+        "--worker_hosts",
+        type=str,
+        default="localhost:2222,localhost:2223",
+        help="Comma-separated list of hostname:port pairs"
+    )
+    parser.add_argument(
+        "--log_dir",
+        type=str,
+        default="/tmp/train_logs",
+        help="Directory for train logs")
+
+    args = parser.parse_args()
+
+    cluster_spec = {"worker": args.worker_hosts.split(","),
+                    "ps": args.ps_hosts.split(",")}
+
+    # Parse role in the cluster by rank.
+    comm = MPI.COMM_WORLD
+    is_ps = comm.rank < len(cluster_spec['ps'])
+    rank = comm.rank if is_ps else comm.rank - len(cluster_spec['ps'])
+    world_size = comm.size - len(cluster_spec['ps'])
+
+    # Configure Logging
+    configure_logger(args.log_dir, is_ps, rank)
+
     batch_size = 128
-    model = Cifar10Model(resnet_size=20,
-                         data_format='channels_last',
-                         resnet_version=2,
-                         dtype=tf.float32)
+    replicas_to_aggregate = len(cluster_spec['worker'])
 
-    data_loader = DatasetCifar(
-        dataset='cifar-10',
-        dataset_root='/datasets',
-        batch_size=batch_size,
-        world_size=world_size,
-        seed=42,
-        tf_dtype=tf.float32)
-
-    is_training = tf.placeholder(tf.bool, (), name='is_training')
-
-    train_op, loss, metrics, epoch = define_ops_to_run(
-        model, data_loader, is_training)
-
-    # The placeholders here will be used in the `sess.run`
-    cf = ControlFlow(is_training=is_training,
-                     train_op=train_op,
-                     data_loader=data_loader,
-                     sess=sess,
-                     loss=loss,
-                     metrics=metrics,
-                     lr_scheduler_level='epoch',
-                     max_train_steps=164,
-                     train_epochs=164)
-
-    cf.train_and_eval(lr_scheduler=epoch)
-
-
-def main():
-    initialize_backends(None)
-
-    sess_config = default_session_config(
-        tf_allow_soft_placement=False,
-        tf_log_device_placement=False,
-        tf_gpu_mem=0.1)
-
-    with tf.Graph().as_default():
-        sess = tf.Session(config=sess_config)
-        with sess.as_default():
-            run(sess)
-
-
-if __name__ == '__main__':
-    main()
+    main(is_ps, rank, world_size, cluster_spec,
+         batch_size, replicas_to_aggregate)
