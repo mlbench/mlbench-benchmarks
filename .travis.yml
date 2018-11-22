@@ -1,0 +1,16 @@
+# Config file for automatic testing at travis-ci.org
+jobs:
+  include:
+    - stage: build openmpi-cifar10-resnet18-all-reduce
+      language: bash
+      sudo: required
+
+      services:
+        - docker
+      install: true
+      script:
+        - docker build -t openmpi-cifar10-resnet18-all-reduce:travis-ci-test ./pytorch/imagerecognition/openmpi-cifar10-resnet18-all-reduce
+
+
+stages:
+  - build openmpi-cifar10-resnet18-all-reduce
