@@ -11,6 +11,17 @@ jobs:
       script:
         - docker build -t openmpi-cifar10-resnet18-all-reduce:travis-ci-test ./pytorch/imagerecognition/openmpi-cifar10-resnet18-all-reduce
 
+    - stage: build tensorflow-base
+      language: bash
+      sudo: required
+
+      services:
+        - docker
+      install: true
+      script:
+        - docker build -t mlbench-tensorflow-base:travis-ci-test ./tensorflow/base/
+
 
 stages:
   - build openmpi-cifar10-resnet18-all-reduce
+  - build tensorflow-base
