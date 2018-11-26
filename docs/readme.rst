@@ -5,30 +5,13 @@
 MLBench Benchmarks
 ==================
 
-MLBench contains several benchmark tasks and implementations.
+MLBench contains several benchmark tasks and implementations. Tasks combinations of datasets and target metrics, whereas the implementations are concrete models and code that solve a task.
 
-Benchmark Tasks
----------------
-A Benchmark Task is a specific dataset and evaluation task, e.g. the CIFAR-10 image dataset with the task of classifying objects in the images.
+For an overview of MLBench tasks, please refer to the :doc:`Benchmarking Tasks Section <mlbench-docs:benchmark-tasks>`
 
 
-Image Recognition
-~~~~~~~~~~~~~~~~~
-
-CIFAR-10
-++++++++
-
-The `CIFAR-10 <https://www.cs.toronto.edu/~kriz/cifar.html>`__ dataset contains 60000 32x32 colour images in 10 classes, such as ``airplane`` or ``dog``, with 6000 images per class.
-There are 50000 training images and 10000 test images.
-
-The task is to correctly predict what class each image belongs to.
-
-The evaluation criterion is mean accuracy of predictions over all test images
-
-
-
-Benchmark Implementations
--------------------------
+Closed Division Benchmark Implementations
+-----------------------------------------
 
 A Benchmark Implementation is a model with fixed hyperparameters that solves a Benchmark Task.
 
@@ -62,7 +45,6 @@ ImageNet
 
 
 All Implementations
--------------------
 
 .. toctree::
 
