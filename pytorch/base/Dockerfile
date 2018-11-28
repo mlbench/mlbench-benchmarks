@@ -84,7 +84,7 @@ ENV CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
 
 # Install basic dependencies
 # RUN git clone --recursive https://github.com/pytorch/pytorch && cd pytorch && python setup.py install
-RUN git clone --recursive https://github.com/pytorch/pytorch && \
+RUN git clone --branch v0.4.1 --recursive https://github.com/pytorch/pytorch && \
     cd pytorch && \
     git submodule update --init && \
     TORCH_CUDA_ARCH_LIST="3.5 3.7 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
@@ -109,6 +109,7 @@ RUN git clone https://github.com/pytorch/vision.git && cd vision && pip install 
 # sudo apt-get install freeglut3-dev build-essential libx11-dev libxmu-dev libxi-dev libgl1-mesa-glx libglu1-mesa libglu1-mesa-dev libglfw3-dev libgles2-mesa-dev
 RUN apt-get install -y libgl1-mesa-glx
 
+RUN pip install kubernetes
 
 # -------------------- Others --------------------
 RUN echo "orte_keep_fqdn_hostnames=t" >> /.openmpi/etc/openmpi-mca-params.conf
