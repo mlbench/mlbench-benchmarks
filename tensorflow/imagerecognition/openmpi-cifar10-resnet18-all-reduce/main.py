@@ -215,8 +215,8 @@ if __name__ == "__main__":
     parser.add_argument('--hosts', type=str, help='The hosts participating in this run')
     args = parser.parse_args()
 
-    rank = os.environ['OMPI_COMM_WORLD_RANK']
-    size = os.environ['OMPI_COMM_WORLD_SIZE']
+    rank = int(os.environ['OMPI_COMM_WORLD_RANK'])
+    size = int(os.environ['OMPI_COMM_WORLD_SIZE'])
 
     hosts = args.hosts.split(",")
 
@@ -227,7 +227,7 @@ if __name__ == "__main__":
     ps = hosts[0] + ":22222" # First worker is the parameter server
 
     cluster_spec = {"worker": workers,
-                    "ps": ps}
+                    "ps": [ps]}
 
     # Parse role in the cluster by rank.
     is_ps = rank < len(cluster_spec['ps'])
@@ -235,7 +235,9 @@ if __name__ == "__main__":
     world_size = size - len(cluster_spec['ps'])
 
     # Configure Logging
-    configure_logger(args.log_dir, is_ps, rank)
+    if not os.path.exists('/mlbench'):
+        os.makedirs('/mlbench')
+    configure_logger('/mlbench', is_ps, rank)
 
     batch_size = 128
     replicas_to_aggregate = len(cluster_spec['worker'])
