@@ -1,5 +1,5 @@
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
-from mlbench_core.models.pytorch.resnet import ResNet18_CIFAR10
+from mlbench_core.models.pytorch.resnet import get_resnet_model
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.lr_scheduler.pytorch import multistep_learning_rates_with_warmup
 from mlbench_core.controlflow.pytorch import TrainValidation
@@ -32,7 +32,7 @@ config = {
     'multisteplr_gamma': 0.1,
     'warmup_linear_scaling': True,
     'warmup_duration': 5,
-    'use_cuda': False,
+    'use_cuda': True,
     "dtype": "fp32"
 }
 
@@ -64,9 +64,8 @@ def main(run_id):
         num_workers=config['num_parallel_workers'],
         pin_memory=config['use_cuda'], drop_last=False)
 
-    model = ResNet18_CIFAR10(
-        layers=[2, 2, 2, 2],
-        num_classes=config['num_classes'])
+    model = get_resnet_model('resnet20', 2, 'fp32',
+                             num_classes=config['num_classes'], use_cuda=True)
 
     if config['use_cuda']:
         model.cuda()
@@ -111,7 +110,8 @@ def main(run_id):
         world_size,
         run_id,
         dtype=config['dtype'],
-        checkpoint=checkpointer)
+        checkpoint=checkpointer,
+        use_cuda=config['use_cuda'])
 
     controlflow.run(dataloader_train=train_loader, dataloader_val=val_loader)
 

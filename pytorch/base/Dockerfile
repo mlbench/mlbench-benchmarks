@@ -86,6 +86,7 @@ ENV CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
 # RUN git clone --recursive https://github.com/pytorch/pytorch && cd pytorch && python setup.py install
 RUN git clone --recursive https://github.com/pytorch/pytorch && \
     cd pytorch && \
+    git checkout tags/v0.4.1 && \
     git submodule update --init && \
     TORCH_CUDA_ARCH_LIST="3.5 3.7 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
     CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" \
