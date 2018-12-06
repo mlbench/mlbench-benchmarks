@@ -1,9 +1,10 @@
 .. |br| raw:: html
 
     <br>
+.. _benchmark-implementations:
 
-MLBench Benchmarks
-==================
+MLBench Benchmark Implementations
+=================================
 
 MLBench contains several benchmark tasks and implementations. Tasks combinations of datasets and target metrics, whereas the implementations are concrete models and code that solve a task.
 
@@ -20,32 +21,32 @@ Image Recognition
 ~~~~~~~~~~~~~~~~~
 
 
-CIFAR-10
-++++++++
+1a. ResNet, CIFAR-10
+++++++++++++++++++++
 
-.. table:: CIFAR-10 Benchmark Implementations. TtA @ 1, 2, 4, 8, 16 = Time to Accuracy with 1, 2, 4, 8, 16 workers. AaT 2h @ 1, 2, 4, 8, 16 = Accuracy after Time (2 Hours) with 1, 2, 4, 8, 16 workers
-   :widths: auto
+PyTorch Cifar-10 ResNet-20 Open-MPI
+"""""""""""""""""""""""""""""""""""
 
-   +-------------------------------------+-----------+---------+-------------+-----------+------------------------------+------------------------------+--------------------------------------------+
-   | Name                                | Framework | Backend | Parallelism | Model     | TtA @ 1, 2, 4, 8, 16         | AaT 2h @ 1, 2, 4, 8, 16      | Details                                    |
-   +=====================================+===========+=========+=============+===========+==============================+==============================+============================================+
-   | openmpi-cifar10-resnet18-all-reduce | PyTorch   | OpenMPI | All-Reduce  | ResNet-18 | 1: XX.X  |br|                | 1: XX.X |br|                 | :doc:`openmpi-cifar10-resnet18-all-reduce` |
-   |                                     |           |         |             |           | 2: XX.X  |br|                | 2: XX.X |br|                 |                                            |
-   |                                     |           |         |             |           | 4: XX.X  |br|                | 4: XX.X |br|                 |                                            |
-   |                                     |           |         |             |           | 8: XX.X  |br|                | 8: XX.X |br|                 |                                            |
-   |                                     |           |         |             |           | 16: XX.X |br|                | 16: XX.X  |br|               |                                            |
-   +-------------------------------------+-----------+---------+-------------+-----------+------------------------------+------------------------------+--------------------------------------------+
+:Framework: PyTorch
+:Communication Backend: Open MPI (PyTorch `torch.distributed`)
+:Distribution Algorithm: All-Reduce
+:Model: ResNet-20
+:Dataset: CIFAR-10
+:GPU: Yes
+:Seed: 42
+:Image Location: /pytorch/imagerecognition/openmpi-cifar10-resnet20-all-reduce/
 
+Tensorflow Cifar-10 ResNet-20 Open-MPI
+""""""""""""""""""""""""""""""""""""""
 
-ImageNet
-++++++++
+.. TODO We use OpenMPI for starting processes, but communication is gRPC? document this more
+   Also, All_Reduce is not exactly all-reduce. We need to comment on this
 
-[.....]
-
-
-
-All Implementations
-
-.. toctree::
-
-   openmpi-cifar10-resnet18-all-reduce
+:Framework: TensorFlow
+:Communication Backend: Open MPI
+:Distribution Algorithm: All-Reduce
+:Model: ResNet-20
+:Dataset: CIFAR-10
+:GPU: Yes
+:Seed: 42
+:Image Location: /tensorflow/imagerecognition/openmpi-cifar10-resnet20-all-reduce/
