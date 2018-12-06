@@ -1,6 +1,6 @@
 # ********************************** STAGE 2 **********************************************
 # later we will use the remote ones
-FROM mlbench/mlbench-tensorflow-base:1.0.0
+FROM mlbench/mlbench-tensorflow-base:1.1.0
 
 # -------------------- Debug --------------------
 RUN apt-get update && apt-get install -y vim net-tools dnsutils iputils-ping traceroute
