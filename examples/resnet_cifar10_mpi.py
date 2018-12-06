@@ -29,7 +29,7 @@ def main(run_id):
                         seed=42,
                         cudnn_deterministic=False,
                         ckpt_run_dir='/checkpoints',
-                        resume=False)
+                        delete_existing_ckpts=False)
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()

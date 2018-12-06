@@ -78,38 +78,9 @@ RUN echo "hwloc_base_binding_policy = none" >> /.openmpi/etc/openmpi-mca-params.
 RUN echo export 'PATH=$HOME/conda/envs/pytorch-py$PYTHON_VERSION/bin:$HOME/.openmpi/bin:$PATH' >> ~/.bashrc
 RUN echo export 'LD_LIBRARY_PATH=$HOME/.openmpi/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
 
-
-# -------------------- PyTorch --------------------
-ENV CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
-
-# Install basic dependencies
-# RUN git clone --recursive https://github.com/pytorch/pytorch && cd pytorch && python setup.py install
-RUN git clone --recursive https://github.com/pytorch/pytorch && \
-    cd pytorch && \
-    git checkout tags/v0.4.1 && \
-    git submodule update --init && \
-    TORCH_CUDA_ARCH_LIST="3.5 3.7 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
-    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" \
-    pip install -v . && \
-    rm -rf /pytorch
-
-
-
-RUN git clone https://github.com/pytorch/vision.git && cd vision && pip install -v .
-
-# RUN pip install -U git+https://github.com/ppwwyyxx/tensorpack.git
-
-# RUN conda install -y -c anaconda msgpack
-# RUN conda install -y -c anaconda msgpack msgpack-numpy pyzmq pillow
-# RUN conda install -y -c conda-forge tqdm
-# # RUN conda install -y -c pchrapka zmq
-# # RUN conda install -c omnia termcolor
-
-# -------------------- patch --------------------
-# libGL.so.1 might be lost when nvidia driver is installed
-# sudo apt-get install freeglut3-dev build-essential libx11-dev libxmu-dev libxi-dev libgl1-mesa-glx libglu1-mesa libglu1-mesa-dev libglfw3-dev libgles2-mesa-dev
-RUN apt-get install -y libgl1-mesa-glx
-
+RUN conda install -y -c conda-forge mpi4py
+# -------------------- TensorFlow Related --------------------
+RUN pip install tensorflow-gpu
 
 # -------------------- Others --------------------
 RUN echo "orte_keep_fqdn_hostnames=t" >> /.openmpi/etc/openmpi-mca-params.conf

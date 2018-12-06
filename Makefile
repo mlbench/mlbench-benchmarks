@@ -48,3 +48,9 @@ publish-pytorch-base: ## Build and publish the pytorch base image. Usage: make p
 	docker build -t mlbench-pytorch-base:$(TAG) ./pytorch/base/
 	docker tag mlbench-pytorch-base:$(TAG) $(DOCKER_REGISTRY)/mlbench-pytorch-base:$(TAG)
 	docker push $(DOCKER_REGISTRY)/mlbench-pytorch-base:$(TAG)
+
+publish-tensorflow-base: ## Build and publish the tensorflow base image. Usage: make publish-tensorflow-base
+	docker build -t mlbench-tensorflow-base:$(TAG) ./tensorflow/base/
+	docker tag mlbench-tensorflow-base:$(TAG) $(DOCKER_REGISTRY)/mlbench-tensorflow-base:$(TAG)
+	docker push $(DOCKER_REGISTRY)/mlbench-tensorflow-base:$(TAG)
+

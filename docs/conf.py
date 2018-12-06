@@ -21,7 +21,7 @@ on_rtd = os.environ.get('READTHEDOCS', None) == 'True'
 
 # This is used for linking and such so we link to the thing we're building
 rtd_version = os.environ.get('READTHEDOCS_VERSION', 'latest')
-if rtd_version not in ['stable', 'latest']:
+if rtd_version not in ['stable', 'latest', 'develop']:
     rtd_version = 'stable'
 
 # -- General configuration ------------------------------------------------
@@ -35,6 +35,7 @@ extensions = [
     'sphinx.ext.autosummary',
     'sphinx.ext.intersphinx',
     'sphinx.ext.viewcode',
+    'sphinxcontrib.bibtex'
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -54,7 +55,9 @@ copyright = '2018 MLBench development team'
 
 autoclass_content = 'both'
 
-intersphinx_mapping = {}
+intersphinx_mapping = {
+    'mlbench-docs': ('https://mlbench.readthedocs.io/en/%s/' % rtd_version, None)
+}
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.

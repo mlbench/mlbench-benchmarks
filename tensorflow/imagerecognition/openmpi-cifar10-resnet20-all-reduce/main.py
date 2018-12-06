@@ -13,7 +13,6 @@ import argparse
 import logging
 import os
 import tensorflow as tf
-from mpi4py import MPI
 
 
 from mlbench_core.utils.tensorflow import initialize_backends, default_session_config
@@ -211,41 +210,34 @@ def configure_logger(log_dir, is_ps, rank):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.register("type", "bool", lambda v: v.lower() == "true")
-
-    # Flags for defining the tf.train.ClusterSpec
-    parser.add_argument(
-        "--ps_hosts",
-        type=str,
-        default="localhost:2224",
-        help="Comma-separated list of hostname:port pairs"
-    )
-    parser.add_argument(
-        "--worker_hosts",
-        type=str,
-        default="localhost:2222,localhost:2223",
-        help="Comma-separated list of hostname:port pairs"
-    )
-    parser.add_argument(
-        "--log_dir",
-        type=str,
-        default="/tmp/train_logs",
-        help="Directory for train logs")
-
+    parser = argparse.ArgumentParser(description='Process run parameters')
+    parser.add_argument('--run_id', type=str, help='The id of the run')
+    parser.add_argument('--hosts', type=str, help='The hosts participating in this run')
     args = parser.parse_args()
 
-    cluster_spec = {"worker": args.worker_hosts.split(","),
-                    "ps": args.ps_hosts.split(",")}
+    rank = int(os.environ['OMPI_COMM_WORLD_RANK'])
+    size = int(os.environ['OMPI_COMM_WORLD_SIZE'])
+
+    hosts = args.hosts.split(",")
+
+    if len(hosts) < 2:
+        raise ValueError("At least 2 pods are needed for this benchmark (1 parameter server, 1 worker)")
+
+    workers = [h + ":22222" for h in hosts[1:]]
+    ps = hosts[0] + ":22222" # First worker is the parameter server
+
+    cluster_spec = {"worker": workers,
+                    "ps": [ps]}
 
     # Parse role in the cluster by rank.
-    comm = MPI.COMM_WORLD
-    is_ps = comm.rank < len(cluster_spec['ps'])
-    rank = comm.rank if is_ps else comm.rank - len(cluster_spec['ps'])
-    world_size = comm.size - len(cluster_spec['ps'])
+    is_ps = rank < len(cluster_spec['ps'])
+    rank = rank if is_ps else rank - len(cluster_spec['ps'])
+    world_size = size - len(cluster_spec['ps'])
 
     # Configure Logging
-    configure_logger(args.log_dir, is_ps, rank)
+    if not os.path.exists('/mlbench'):
+        os.makedirs('/mlbench')
+    configure_logger('/mlbench', is_ps, rank)
 
     batch_size = 128
     replicas_to_aggregate = len(cluster_spec['worker'])
