@@ -112,3 +112,5 @@ ENV/
 myvalues.yaml
 
 setup_telepresence.sh
+
+docs/_sidebar.rst.inc
