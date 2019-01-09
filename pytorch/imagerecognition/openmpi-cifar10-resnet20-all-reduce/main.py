@@ -68,7 +68,8 @@ def main(run_id):
         pin_memory=config['use_cuda'], drop_last=False)
 
     model = get_resnet_model('resnet20', 2, 'fp32',
-                             num_classes=config['num_classes'], use_cuda=True)
+                             num_classes=config['num_classes'],
+                             use_cuda=config['use_cuda'])
 
     if config['use_cuda']:
         model.cuda()
