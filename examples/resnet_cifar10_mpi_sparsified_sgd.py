@@ -1,7 +1,7 @@
-r"""Example of using mlbench : CIFAR10 + Resnet20 + MPI + GPU
+r"""Example of using sparsified sgd with memory : CIFAR10 + Resnet20 + MPI + GPU
 
 .. code-block:: bash
-    mpirun -n 2 --oversubscribe python resnet_cifar10_mpi.py --run_id 1
+    mpirun -n 2 --oversubscribe python resnet_cifar10_mpi_sparsified_sgd.py --run_id 1
 """
 import argparse
 import json
@@ -12,18 +12,158 @@ from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsE
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
-from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
 
+import numpy as np
+import time
+import torch
 import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim.optimizer import Optimizer, required
 from torch.utils.data import DataLoader
 
 # If used in Kubernetes, then comment this line.
 os.environ['MLBENCH_IN_DOCKER'] = ""
+
+
+class SSGDWM(Optimizer):
+    # Sparsified SGD with Memory
+    # First we only assume we sparsify to top 1
+    def __init__(self,
+                 model,
+                 world_size,
+                 num_coordinates,
+                 lr=required,
+                 weight_decay=0):
+        if lr is not required and lr < 0.0:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if weight_decay < 0.0:
+            raise ValueError(
+                "Invalid weight_decay value: {}".format(weight_decay))
+        defaults = dict(lr=lr, weight_decay=weight_decay)
+
+        self.model = model
+        self.world_size = world_size
+        self.num_coordinates = num_coordinates
+        super(SSGDWM, self).__init__(model.parameters(), defaults)
+
+        self.__create_gradients_memory()
+        self.__create_weighted_average_params()
+
+        # random.seed(0)
+        self.rng = np.random.RandomState(100)
+
+    def __create_weighted_average_params(self):
+        r""" Create a memory to keep the weighted average of parameters in each iteration """
+        for group in self.param_groups:
+            for p in group['params']:
+                param_state = self.state[p]
+                param_state['estimated_w'] = torch.zeros_like(p.data)
+                p.data.normal_(0, 0.01)
+                param_state['estimated_w'].copy_(p.data)
+
+    def __create_gradients_memory(self):
+        r""" Create a memory to keep gradients that are not used in each iteration """
+        for group in self.param_groups:
+            for p in group['params']:
+                param_state = self.state[p]
+                param_state['memory'] = torch.zeros_like(p.data.view(-1))
+
+    def cuda(self):
+        for group in self.param_groups:
+            for p in group['params']:
+                param_state = self.state[p]
+                param_state['estimated_w'] = param_state['estimated_w'].cuda()
+                param_state['memory'] = param_state['memory'].cuda()
+        return self
+
+    def sparsify_gradients(self, param, lr):
+        """ Calls one of the sparsification functions (random or blockwise)
+
+        Args:
+            random_sparse (bool): Indicates the way we want to make the gradients sparse
+                (random or blockwise) (default: False)
+            param (:obj: `torch.nn.Parameter`): Model parameter
+        """
+        return self._random_sparsify(param, lr)
+
+    def _random_sparsify(self, param, lr):
+        """ Sparsify the gradients vector by selecting 'k' of them randomly.
+
+        Args:
+            param (:obj: `torch.nn.Parameter`): Model parameter
+            lr (float): Learning rate
+        """
+        grad_view = param.grad.data.view(-1)
+        full_size = len(grad_view)
+
+        # Update memory
+        self.state[param]['memory'].add_(grad_view * lr)
+
+        # indices of weight to be communicated
+        if self.num_coordinates < full_size:
+            local_indices = torch.tensor(self.rng.choice(
+                full_size,
+                self.num_coordinates,
+                replace=False))
+        else:
+            local_indices = torch.tensor(np.arange(full_size))
+
+        # Collect all of the indices for communication
+        all_indicies = local_indices
+
+        # Create a sparse vector for the (index, value) of sampled weight
+        sparse_tensor = self.state[param]['memory'][all_indicies]
+        self.state[param]['memory'][all_indicies] -= sparse_tensor
+
+        return sparse_tensor, all_indicies
+
+    def _aggregate_sparsified_gradients(self):
+        for i in range(100):
+            for group in self.param_groups:
+                lr = group['lr']
+                for i, p in enumerate(group['params']):
+                    sparse_tensor, random_index = self.sparsify_gradients(
+                        p, lr)
+                    dist.all_reduce(sparse_tensor, op=dist.reduce_op.SUM)
+                    avg_grads = sparse_tensor / self.world_size
+                    dv = p.grad.data.view(-1)
+                    dv[random_index] = avg_grads
+
+    def _apply_step(self, closure=None):
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+
+            weight_decay = group['weight_decay']
+
+            for p in group['params']:
+
+                if p.grad is None:
+                    continue
+                d_p = p.grad.data
+
+                if weight_decay != 0:
+                    d_p.add_(weight_decay, p.data)
+                p.data.add_(-d_p)
+
+        return loss
+
+    def step(self, closure=None):
+        # Aggregate with sparsified gradients
+        self._aggregate_sparsified_gradients()
+        return self._apply_step(closure=closure)
 
 
 def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
@@ -53,13 +193,12 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
         num_classes=10,
         version=1)
 
-    optimizer = CentralizedSGD(
+    optimizer = SSGDWM(
+        model,
         world_size=world_size,
-        model=model,
+        num_coordinates=1,
         lr=0.1,
-        momentum=0.9,
-        weight_decay=1e-4,
-        nesterov=False)
+        weight_decay=0)
 
     # Create a learning rate scheduler for an optimizer
     scheduler = MultiStepLR(
@@ -72,6 +211,7 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
 
     if use_cuda:
         model = model.cuda()
+        optimizer = optimizer.cuda()
         loss_function = loss_function.cuda()
 
     # Metrics like Top 1/5 Accuracy
@@ -172,7 +312,7 @@ if __name__ == '__main__':
                         default=False, help='Only validate from checkpoints.')
     args = parser.parse_args()
 
-    uid = 'template'
+    uid = 'sparsifiedsgd'
     dataset_dir = os.path.join(args.root_dataset, 'torch', 'cifar10')
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)

@@ -1,49 +1,44 @@
-r"""Example of using mlbench : CIFAR10 + Resnet20 + MPI + GPU + (RING structure)
+r"""Example of using mlbench : CIFAR10 + Resnet20 + MPI + GPU + Ring
 
-## Launch in docker
-```
-$ # Train models with 8 nodes
-$ mpirun -n 8 --oversubscribe python resnet_cifar10_pytorch_decentralized.py --run_id 1
-$ # Evaludate models on training and validation dataset.
-$ mpirun -n 8 --oversubscribe python resnet_cifar10_pytorch_decentralized.py --run_id 1 --validation_only
-```
-## Core module version d9365ae
+.. code-block:: bash
+    mpirun -n 4 --oversubscribe python resnet_cifar10_pytorch_decentralized.py --run_id 1
 """
-import os
+
 import argparse
 import json
-import torch.distributed as dist
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from torch.nn.modules.loss import CrossEntropyLoss
+import os
 
-from mlbench_core.utils.pytorch import initialize_backends
+from mlbench_core.controlflow.pytorch import TrainValidation
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsEvaluationControlFlow
+from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
-from mlbench_core.lr_scheduler.pytorch.lr import MultiStepLR
+from mlbench_core.optim.pytorch.optim import DecentralizedSGD
+from mlbench_core.utils.pytorch import initialize_backends
+from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
-from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
-from mlbench_core.utils.pytorch.distributed import DecentralizedAggregation
 
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsEvaluationControlFlow
-from mlbench_core.controlflow.pytorch import TrainValidation
+import torch.distributed as dist
+from torch.nn.modules.loss import CrossEntropyLoss
+from torch.optim.lr_scheduler import MultiStepLR
+from torch.utils.data import DataLoader
 
-# Comment this line if used in Kubernetes.
+# If used in Kubernetes, then comment this line.
 os.environ['MLBENCH_IN_DOCKER'] = ""
 
 
-def main(run_id, validation_only=False):
+def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
     r"""Main logic."""
-    num_parallel_workers = 2
-    dataset_root = '/datasets/torch/cifar10'
-    ckpt_run_dir = '/checkpoints/decentralized/cifar_resnet20'
+    num_parallel_workers = 0
     use_cuda = True
+    max_batch_per_epoch = None
     train_epochs = 164
+    batch_size = 128
 
     initialize_backends(
         comm_backend='mpi',
         logging_level='INFO',
-        logging_file='/mlbench.log',
+        logging_file=os.path.join(output_dir, 'mlbench.log'),
         use_cuda=use_cuda,
         seed=42,
         cudnn_deterministic=False,
@@ -53,20 +48,21 @@ def main(run_id, validation_only=False):
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    batch_size = 256 // world_size
-
     model = ResNetCIFAR(
         resnet_size=20,
         bottleneck=False,
         num_classes=10,
         version=1)
 
-    optimizer = optim.SGD(
-        model.parameters(),
+    ring_neighbors = [(rank + 1) % world_size, (rank - 1) % world_size]
+    optimizer = DecentralizedSGD(
+        rank=rank,
+        neighbors=ring_neighbors,
+        model=model,
         lr=0.1,
         momentum=0.9,
         weight_decay=1e-4,
-        nesterov=True)
+        nesterov=False)
 
     # Create a learning rate scheduler for an optimizer
     scheduler = MultiStepLR(
@@ -87,8 +83,8 @@ def main(run_id, validation_only=False):
         TopKAccuracy(topk=5)
     ]
 
-    train_set = CIFAR10V1(dataset_root, train=True, download=True)
-    val_set = CIFAR10V1(dataset_root, train=False, download=True)
+    train_set = CIFAR10V1(dataset_dir, train=True, download=True)
+    val_set = CIFAR10V1(dataset_dir, train=False, download=True)
 
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
     val_set = partition_dataset_by_rank(val_set, rank, world_size)
@@ -112,15 +108,9 @@ def main(run_id, validation_only=False):
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir,
         rank=rank,
-        checkpoint_all=True)
+        freq=CheckpointFreq.NONE)
 
     if not validation_only:
-        # Aggregation
-        ring_neighbors = [(rank + 1) % world_size, (rank - 1) % world_size]
-
-        agg_fn = DecentralizedAggregation(
-            rank=rank, neighbors=ring_neighbors).agg_model
-
         controlflow = TrainValidation(
             model=model,
             optimizer=optimizer,
@@ -139,8 +129,7 @@ def main(run_id, validation_only=False):
             transform_target_type=None,
             average_models=True,
             use_cuda=use_cuda,
-            max_batch_per_epoch=None,
-            agg_fn=agg_fn)
+            max_batch_per_epoch=max_batch_per_epoch)
 
         controlflow.run(
             dataloader_train=train_loader,
@@ -164,18 +153,35 @@ def main(run_id, validation_only=False):
             max_batch_per_epoch=None)
 
         train_stats = cecf.evaluate_by_epochs(train_loader)
-        with open(os.path.join(ckpt_run_dir, "train_stats.json"), 'w') as f:
+        with open(os.path.join(output_dir, "train_stats.json"), 'w') as f:
             json.dump(train_stats, f)
 
         val_stats = cecf.evaluate_by_epochs(val_loader)
-        with open(os.path.join(ckpt_run_dir, "val_stats.json"), 'w') as f:
+        with open(os.path.join(output_dir, "val_stats.json"), 'w') as f:
             json.dump(val_stats, f)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process run parameters')
-    parser.add_argument('--run_id', type=str, help='The id of the run')
+    parser.add_argument('--run_id', type=str, default='1',
+                        help='The id of the run')
+    parser.add_argument('--root-dataset', type=str, default='/datasets',
+                        help='Default root directory to dataset.')
+    parser.add_argument('--root-checkpoint', type=str, default='/checkpoint',
+                        help='Default root directory to checkpoint.')
+    parser.add_argument('--root-output', type=str, default='/output',
+                        help='Default root directory to output.')
     parser.add_argument('--validation_only', action='store_true',
                         default=False, help='Only validate from checkpoints.')
     args = parser.parse_args()
-    main(args.run_id, args.validation_only)
+
+    uid = 'dsgd'
+    dataset_dir = os.path.join(args.root_dataset, 'torch', 'cifar10')
+    ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
+    output_dir = os.path.join(args.root_output, uid)
+    os.makedirs(dataset_dir, exist_ok=True)
+    os.makedirs(ckpt_run_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+
+    main(args.run_id, dataset_dir, ckpt_run_dir,
+         output_dir, args.validation_only)

@@ -122,6 +122,7 @@ RUN git clone https://github.com/pytorch/vision.git && cd vision && pip install 
 # sudo apt-get install freeglut3-dev build-essential libx11-dev libxmu-dev libxi-dev libgl1-mesa-glx libglu1-mesa libglu1-mesa-dev libglfw3-dev libgles2-mesa-dev
 RUN apt-get install -y libgl1-mesa-glx
 
+RUN pip install kubernetes dill
 
 # -------------------- Others --------------------
 RUN echo "orte_keep_fqdn_hostnames=t" >> /.openmpi/etc/openmpi-mca-params.conf

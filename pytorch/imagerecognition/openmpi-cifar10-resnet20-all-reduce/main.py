@@ -1,8 +1,11 @@
+import argparse
+import os
+
+from mlbench_core.controlflow.pytorch import TrainValidation
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
-from mlbench_core.models.pytorch.resnet import get_resnet_model
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.lr_scheduler.pytorch import multistep_learning_rates_with_warmup
-from mlbench_core.controlflow.pytorch import TrainValidation
+from mlbench_core.models.pytorch.resnet import get_resnet_model
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
 
@@ -10,8 +13,6 @@ from torch import optim
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 
-import argparse
-import os
 
 config = {
     'seed': 42,
@@ -20,7 +21,7 @@ config = {
     'logging_file': '/mlbench.log',
     'checkpoint_root': '/checkpoint',
     'train_epochs': 164,
-    'batch_size': 128,
+    'batch_size': 256,
     'num_parallel_workers': 2,
     'lr_per_sample': 0.000390625,
     'dataset_root': '/datasets/torch/cifar10',
@@ -55,6 +56,9 @@ def main(run_id):
 
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
 
+    # Set batchsize according to number of workers
+    config['batch_size'] = config['batch_size'] // world_size
+
     train_loader = DataLoader(
         train_set, batch_size=config['batch_size'], shuffle=True,
         num_workers=config['num_parallel_workers'],
@@ -65,7 +69,8 @@ def main(run_id):
         pin_memory=config['use_cuda'], drop_last=False)
 
     model = get_resnet_model('resnet20', 2, 'fp32',
-                             num_classes=config['num_classes'], use_cuda=True)
+                             num_classes=config['num_classes'],
+                             use_cuda=config['use_cuda'])
 
     if config['use_cuda']:
         model.cuda()
