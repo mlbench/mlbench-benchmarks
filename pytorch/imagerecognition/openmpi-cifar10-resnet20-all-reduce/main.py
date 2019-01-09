@@ -1,8 +1,11 @@
+import argparse
+import os
+
+from mlbench_core.controlflow.pytorch import TrainValidation
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
-from mlbench_core.models.pytorch.resnet import get_resnet_model
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.lr_scheduler.pytorch import multistep_learning_rates_with_warmup
-from mlbench_core.controlflow.pytorch import TrainValidation
+from mlbench_core.models.pytorch.resnet import get_resnet_model
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
 
@@ -10,8 +13,6 @@ from torch import optim
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 
-import argparse
-import os
 
 config = {
     'seed': 42,
