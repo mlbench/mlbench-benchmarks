@@ -1,4 +1,16 @@
-FROM nvidia/cuda:9.0-cudnn7-devel-ubuntu16.04 as mlbench-worker-base
+#FROM nvidia/cuda:9.0-cudnn7-devel-ubuntu16.04 as mlbench-worker-base
+FROM nvidia/cuda:9.0-devel-ubuntu16.04 as mlbench-worker-base
+LABEL maintainer "NVIDIA CORPORATION <cudatools@nvidia.com>"
+
+ENV CUDNN_VERSION 7.3.0.29
+LABEL com.nvidia.cudnn.version="${CUDNN_VERSION}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+            libcudnn7=$CUDNN_VERSION-1+cuda9.0 \
+            libcudnn7-dev=$CUDNN_VERSION-1+cuda9.0 && \
+    apt-mark hold libcudnn7 && \
+    rm -rf /var/lib/apt/lists/*
+
 # TODO: reduce size and complexity of image.
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -86,7 +98,7 @@ ENV CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
 # RUN git clone --recursive https://github.com/pytorch/pytorch && cd pytorch && python setup.py install
 RUN git clone --recursive https://github.com/pytorch/pytorch && \
     cd pytorch && \
-    git checkout tags/v0.4.1 && \
+    git checkout tags/v1.0.0 && \
     git submodule update --init && \
     TORCH_CUDA_ARCH_LIST="3.5 3.7 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
     CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" \
