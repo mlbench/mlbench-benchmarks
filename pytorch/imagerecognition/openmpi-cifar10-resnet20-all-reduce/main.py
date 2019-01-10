@@ -21,7 +21,7 @@ config = {
     'logging_file': '/mlbench.log',
     'checkpoint_root': '/checkpoint',
     'train_epochs': 164,
-    'batch_size': 256,
+    'batch_size': 32,
     'num_parallel_workers': 2,
     'lr_per_sample': 0.000390625,
     'dataset_root': '/datasets/torch/cifar10',
@@ -56,9 +56,6 @@ def main(run_id):
 
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
 
-    # Set batchsize according to number of workers
-    config['batch_size'] = config['batch_size'] // world_size
-
     train_loader = DataLoader(
         train_set, batch_size=config['batch_size'], shuffle=True,
         num_workers=config['num_parallel_workers'],
@@ -75,7 +72,9 @@ def main(run_id):
     if config['use_cuda']:
         model.cuda()
 
-    lr = config['lr_per_sample'] * config['batch_size']
+    global_batch_size = config['batch_size'] * world_size
+
+    lr = config['lr_per_sample'] * global_batch_size
 
     optimizer = optim.SGD(
         model.parameters(),
