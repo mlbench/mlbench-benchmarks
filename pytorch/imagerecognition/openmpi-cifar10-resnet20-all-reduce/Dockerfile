@@ -1,6 +1,6 @@
 # ********************************** STAGE 2 **********************************************
 # later we will use the remote ones
-FROM mlbench/mlbench-pytorch-base:1.1.0
+FROM  mlbench-pytorch-base:1.0-test
 
 # -------------------- Debug --------------------
 RUN apt-get update && apt-get install -y vim net-tools

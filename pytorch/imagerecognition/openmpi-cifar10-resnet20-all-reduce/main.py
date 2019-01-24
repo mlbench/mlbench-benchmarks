@@ -1,11 +1,8 @@
-import argparse
-import os
-
-from mlbench_core.controlflow.pytorch import TrainValidation
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
+from mlbench_core.models.pytorch.resnet import get_resnet_model
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.lr_scheduler.pytorch import multistep_learning_rates_with_warmup
-from mlbench_core.models.pytorch.resnet import get_resnet_model
+from mlbench_core.controlflow.pytorch import TrainValidation
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
 
@@ -13,6 +10,8 @@ from torch import optim
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 
+import argparse
+import os
 
 config = {
     'seed': 42,
@@ -23,18 +22,20 @@ config = {
     'train_epochs': 164,
     'batch_size': 32,
     'num_parallel_workers': 2,
-    'lr_per_sample': 0.000390625,
+    'lr_per_sample': 0.1 / 256,
     'dataset_root': '/datasets/torch/cifar10',
     'num_classes': 10,
     'momentum': 0.9,
     'nesterov': True,
     'weight_decay': 0.0001,
-    'multisteplr_milestones': [82, 109],
+    'multisteplr_milestones': [820, 1090],
     'multisteplr_gamma': 0.1,
     'warmup_linear_scaling': True,
     'warmup_duration': 5,
     'use_cuda': True,
-    "dtype": "fp32"
+    'dtype': 'fp32',
+    'repartition_per_epoch': True
+
 }
 
 
@@ -72,9 +73,7 @@ def main(run_id):
     if config['use_cuda']:
         model.cuda()
 
-    global_batch_size = config['batch_size'] * world_size
-
-    lr = config['lr_per_sample'] * global_batch_size
+    lr = config['lr_per_sample'] * config['batch_size']
 
     optimizer = optim.SGD(
         model.parameters(),
@@ -117,7 +116,10 @@ def main(run_id):
         checkpoint=checkpointer,
         use_cuda=config['use_cuda'])
 
-    controlflow.run(dataloader_train=train_loader, dataloader_val=val_loader)
+    controlflow.run(
+        dataloader_train=train_loader,
+        dataloader_val=val_loader,
+        repartition_per_epoch=config['repartition_per_epoch'])
 
 
 if __name__ == '__main__':
