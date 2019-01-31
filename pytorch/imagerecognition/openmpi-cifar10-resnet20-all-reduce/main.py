@@ -1,127 +1,181 @@
+"""Training ResNet for CIFAR-10 dataset.
+
+.. code-block:: bash
+    mpirun -n 2 --oversubscribe python resnet_cifar10_mpi.py --run_id 1
+"""
 import argparse
+import json
 import os
 
 from mlbench_core.controlflow.pytorch import TrainValidation
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsEvaluationControlFlow
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
-from mlbench_core.lr_scheduler.pytorch import multistep_learning_rates_with_warmup
-from mlbench_core.models.pytorch.resnet import get_resnet_model
+from mlbench_core.models.pytorch.resnet import ResNetCIFAR
+from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils.pytorch import initialize_backends
+from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
 
-from torch import optim
+import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
+from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.data import DataLoader
 
 
-config = {
-    'seed': 42,
-    'comm_backend': 'mpi',
-    'logging_level': 'DEBUG',
-    'logging_file': '/mlbench.log',
-    'checkpoint_root': '/checkpoint',
-    'train_epochs': 164,
-    'batch_size': 32,
-    'num_parallel_workers': 2,
-    'lr_per_sample': 0.000390625,
-    'dataset_root': '/datasets/torch/cifar10',
-    'num_classes': 10,
-    'momentum': 0.9,
-    'nesterov': True,
-    'weight_decay': 0.0001,
-    'multisteplr_milestones': [82, 109],
-    'multisteplr_gamma': 0.1,
-    'warmup_linear_scaling': True,
-    'warmup_duration': 5,
-    'use_cuda': True,
-    "dtype": "fp32"
-}
+def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
+    r"""Main logic."""
+    num_parallel_workers = 2
+    use_cuda = False
+    max_batch_per_epoch = None
+    train_epochs = 164
+    batch_size = 128
 
+    initialize_backends(
+        comm_backend='mpi',
+        logging_level='INFO',
+        logging_file=os.path.join(output_dir, 'mlbench.log'),
+        use_cuda=use_cuda,
+        seed=42,
+        cudnn_deterministic=False,
+        ckpt_run_dir=ckpt_run_dir,
+        delete_existing_ckpts=not validation_only)
 
-def main(run_id):
-    checkpoint_dir = os.path.join(config['checkpoint_root'], run_id)
-    rank, world_size, _ = initialize_backends(
-        comm_backend=config['comm_backend'],
-        logging_level=config['logging_level'],
-        logging_file=config['logging_file'],
-        use_cuda=config['use_cuda'],
-        seed=config['seed'],
-        ckpt_run_dir=checkpoint_dir
-    )
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
 
-    os.makedirs(config['dataset_root'], exist_ok=True)
+    model = ResNetCIFAR(
+        resnet_size=20,
+        bottleneck=False,
+        num_classes=10,
+        version=1)
 
-    train_set = CIFAR10V1(config['dataset_root'], train=True, download=True)
-    val_set = CIFAR10V1(config['dataset_root'], train=False, download=True)
+    optimizer = CentralizedSGD(
+        world_size=world_size,
+        model=model,
+        lr=0.1,
+        momentum=0.9,
+        weight_decay=1e-4,
+        nesterov=False)
 
-    train_set = partition_dataset_by_rank(train_set, rank, world_size)
-
-    train_loader = DataLoader(
-        train_set, batch_size=config['batch_size'], shuffle=True,
-        num_workers=config['num_parallel_workers'],
-        pin_memory=config['use_cuda'], drop_last=False)
-    val_loader = DataLoader(
-        val_set, batch_size=config['batch_size'], shuffle=False,
-        num_workers=config['num_parallel_workers'],
-        pin_memory=config['use_cuda'], drop_last=False)
-
-    model = get_resnet_model('resnet20', 2, 'fp32',
-                             num_classes=config['num_classes'],
-                             use_cuda=config['use_cuda'])
-
-    if config['use_cuda']:
-        model.cuda()
-
-    global_batch_size = config['batch_size'] * world_size
-
-    lr = config['lr_per_sample'] * global_batch_size
-
-    optimizer = optim.SGD(
-        model.parameters(),
-        lr=lr,
-        momentum=config['momentum'],
-        weight_decay=config['weight_decay'],
-        nesterov=config['nesterov'])
-
-    scheduler = multistep_learning_rates_with_warmup(
+    # Create a learning rate scheduler for an optimizer
+    scheduler = MultiStepLR(
         optimizer,
-        world_size,
-        lr,
-        config['multisteplr_gamma'],
-        config['multisteplr_milestones'],
-        warmup_duration=config['warmup_duration'],
-        warmup_linear_scaling=config['warmup_linear_scaling'],
-        warmup_lr=lr)
+        milestones=[82, 109],
+        gamma=0.1)
 
+    # A loss_function for computing the loss
     loss_function = CrossEntropyLoss()
 
-    if config['use_cuda']:
-        loss_function.cuda()
+    if use_cuda:
+        model = model.cuda()
+        loss_function = loss_function.cuda()
 
-    metrics = [TopKAccuracy(topk=1), TopKAccuracy(topk=5)]
+    # Metrics like Top 1/5 Accuracy
+    metrics = [
+        TopKAccuracy(topk=1),
+        TopKAccuracy(topk=5)
+    ]
 
-    checkpointer = Checkpointer(checkpoint_dir, rank)
+    train_set = CIFAR10V1(dataset_dir, train=True, download=True)
+    val_set = CIFAR10V1(dataset_dir, train=False, download=True)
 
-    controlflow = TrainValidation(
-        model,
-        optimizer,
-        loss_function,
-        metrics,
-        scheduler,
-        config['batch_size'],
-        config['train_epochs'],
-        rank,
-        world_size,
-        run_id,
-        dtype=config['dtype'],
-        checkpoint=checkpointer,
-        use_cuda=config['use_cuda'])
+    train_set = partition_dataset_by_rank(train_set, rank, world_size)
+    val_set = partition_dataset_by_rank(val_set, rank, world_size)
 
-    controlflow.run(dataloader_train=train_loader, dataloader_val=val_loader)
+    train_loader = DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_parallel_workers,
+        pin_memory=use_cuda,
+        drop_last=False)
+
+    val_loader = DataLoader(
+        val_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_parallel_workers,
+        pin_memory=use_cuda,
+        drop_last=False)
+
+    checkpointer = Checkpointer(
+        ckpt_run_dir=ckpt_run_dir,
+        rank=rank,
+        freq=CheckpointFreq.NONE)
+
+    if not validation_only:
+        controlflow = TrainValidation(
+            model=model,
+            optimizer=optimizer,
+            loss_function=loss_function,
+            metrics=metrics,
+            scheduler=scheduler,
+            batch_size=batch_size,
+            train_epochs=train_epochs,
+            rank=rank,
+            world_size=world_size,
+            run_id=run_id,
+            dtype='fp32',
+            validate=True,
+            schedule_per='epoch',
+            checkpoint=checkpointer,
+            transform_target_type=None,
+            average_models=True,
+            use_cuda=use_cuda,
+            max_batch_per_epoch=max_batch_per_epoch)
+
+        controlflow.run(
+            dataloader_train=train_loader,
+            dataloader_val=val_loader,
+            dataloader_train_fn=None,
+            dataloader_val_fn=None,
+            resume=False,
+            repartition_per_epoch=False)
+    else:
+        cecf = CheckpointsEvaluationControlFlow(
+            ckpt_dir=ckpt_run_dir,
+            rank=rank,
+            world_size=world_size,
+            checkpointer=checkpointer,
+            model=model,
+            epochs=train_epochs,
+            loss_function=loss_function,
+            metrics=metrics,
+            use_cuda=use_cuda,
+            dtype='fp32',
+            max_batch_per_epoch=None)
+
+        train_stats = cecf.evaluate_by_epochs(train_loader)
+        with open(os.path.join(output_dir, "train_stats.json"), 'w') as f:
+            json.dump(train_stats, f)
+
+        val_stats = cecf.evaluate_by_epochs(val_loader)
+        with open(os.path.join(output_dir, "val_stats.json"), 'w') as f:
+            json.dump(val_stats, f)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process run parameters')
-    parser.add_argument('--run_id', type=str, help='The id of the run')
+    parser.add_argument('--run_id', type=str, default='1',
+                        help='The id of the run')
+    parser.add_argument('--root-dataset', type=str, default='/datasets',
+                        help='Default root directory to dataset.')
+    parser.add_argument('--root-checkpoint', type=str, default='/checkpoint',
+                        help='Default root directory to checkpoint.')
+    parser.add_argument('--root-output', type=str, default='/output',
+                        help='Default root directory to output.')
+    parser.add_argument('--validation_only', action='store_true',
+                        default=False, help='Only validate from checkpoints.')
     args = parser.parse_args()
-    main(args.run_id)
+
+    uid = 'benchmark'
+    dataset_dir = os.path.join(args.root_dataset, 'torch', 'cifar10')
+    ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
+    output_dir = os.path.join(args.root_output, uid)
+    os.makedirs(dataset_dir, exist_ok=True)
+    os.makedirs(ckpt_run_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+
+    main(args.run_id, dataset_dir, ckpt_run_dir,
+         output_dir, args.validation_only)
