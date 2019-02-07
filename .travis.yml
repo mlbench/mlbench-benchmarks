@@ -11,6 +11,16 @@ jobs:
       script:
         - docker build -t pytorch-openmpi-cifar10-resnet20-all-reduce:travis-ci-test ./pytorch/imagerecognition/openmpi-cifar10-resnet20-all-reduce
 
+    - stage: build pytorch-openmpi-cifar10-resnet20-all-reduce-scaling
+      language: bash
+      sudo: required
+
+      services:
+        - docker
+      install: true
+      script:
+        - docker build -t pytorch-openmpi-cifar10-resnet20-all-reduce-scaling:travis-ci-test ./pytorch/imagerecognition/openmpi-cifar10-resnet20-all-reduce-scaling
+
     - stage: build tensorflow-base
       language: bash
       sudo: required
@@ -34,5 +44,6 @@ jobs:
 
 stages:
   - build pytorch-openmpi-cifar10-resnet20-all-reduce
+  - build pytorch-openmpi-cifar10-resnet20-all-reduce-scaling
   - build tensorflow-openmpi-cifar10-resnet20-all-reduce
   - build tensorflow-base
