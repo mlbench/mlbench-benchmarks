@@ -19,14 +19,15 @@ from mlbench_core.lr_scheduler.pytorch.lr import TimeDecayLR, SQRTTimeDecayLR
 from torch.utils.data import DataLoader
 
 
-def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
+def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
+         gpu=False):
     r"""Main logic."""
     num_parallel_workers = 0
-    use_cuda = False
+    use_cuda = gpu
     max_batch_per_epoch = None
     train_epochs = 20
     batch_size = 100
-    
+
     n_features = 2000
     alpha = 200
     l1_coef = 0.0000025
@@ -54,13 +55,13 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
 
     # A loss_function for computing the loss
     loss_function = BCELossRegularized(l1=l1_coef, l2=l2_coef, model=model)
-    
+
     if use_cuda:
         model = model.cuda()
         loss_function = loss_function.cuda()
 
     metrics = []
-    
+
     train_set = load_libsvm_lmdb('epsilon-train', dataset_dir)
     val_set = load_libsvm_lmdb('epsilon-train', dataset_dir)
 
@@ -152,6 +153,8 @@ if __name__ == '__main__':
                         help='Default root directory to output.')
     parser.add_argument('--validation_only', action='store_true',
                         default=False, help='Only validate from checkpoints.')
+    parser.add_argument('--gpu', action='store_true', default=False,
+                        help='Train with GPU')
     args = parser.parse_args()
 
     uid = 'benchmark'
@@ -163,4 +166,4 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True)
 
     main(args.run_id, dataset_dir, ckpt_run_dir,
-         output_dir, args.validation_only)
+         output_dir, args.validation_only), args.gpu

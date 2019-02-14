@@ -23,10 +23,11 @@ from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 
 
-def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
+def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
+         gpu=False):
     r"""Main logic."""
     num_parallel_workers = 2
-    use_cuda = False
+    use_cuda = gpu
     max_batch_per_epoch = None
     train_epochs = 164
     batch_size = 128
@@ -172,6 +173,8 @@ if __name__ == '__main__':
                         help='Default root directory to output.')
     parser.add_argument('--validation_only', action='store_true',
                         default=False, help='Only validate from checkpoints.')
+    parser.add_argument('--gpu', action='store_true', default=False,
+                        help='Train with GPU')
     args = parser.parse_args()
 
     uid = 'scaling'
@@ -183,4 +186,4 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True)
 
     main(args.run_id, dataset_dir, ckpt_run_dir,
-         output_dir, args.validation_only)
+         output_dir, args.validation_only, args.gpu)
