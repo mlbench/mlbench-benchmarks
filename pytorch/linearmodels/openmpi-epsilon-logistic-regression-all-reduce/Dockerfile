@@ -1,7 +1,7 @@
-FROM  mlbench-pytorch-base:1.0-test
+FROM mlbench/mlbench-pytorch-base:pytorch-v0.4.1
 
 # -------------------- Debug --------------------
-RUN apt-get update && apt-get install -y vim net-tools
+# RUN apt-get update && apt-get install -y vim net-tools
 
 # The reference implementation and user defined implementations are placed here.
 ADD ./requirements.txt /requirements.txt
@@ -17,4 +17,3 @@ ENV PYTHONPATH /codes
 
 # Remove empty ld
 RUN rm $(ldconfig 2>&1 | grep 'is empty, not checked' | awk '{print $3}') 2> /dev/null || true
-RUN pip install tensorpack

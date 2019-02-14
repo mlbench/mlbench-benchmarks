@@ -1,0 +1,2 @@
+mlbench-core==1.3.2
+tensorpack

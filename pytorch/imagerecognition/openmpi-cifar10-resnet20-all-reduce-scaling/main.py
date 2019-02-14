@@ -11,6 +11,7 @@ from mlbench_core.controlflow.pytorch import TrainValidation
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsEvaluationControlFlow
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
+from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils.pytorch import initialize_backends
@@ -19,7 +20,6 @@ from mlbench_core.utils.pytorch.checkpoint import Checkpointer
 
 import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
-from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.data import DataLoader
 
 
@@ -60,10 +60,15 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
         nesterov=False)
 
     # Create a learning rate scheduler for an optimizer
-    scheduler = MultiStepLR(
+    scheduler = MultistepLearningRatesWithWarmup(
         optimizer,
+        world_size=world_size,
         milestones=[82, 109],
-        gamma=0.1)
+        gamma=0.1,
+        lr=0.1,
+        warmup_duration=5,
+        warmup_linear_scaling=True,
+        warmup_init_lr=None)
 
     # A loss_function for computing the loss
     loss_function = CrossEntropyLoss()
@@ -172,7 +177,7 @@ if __name__ == '__main__':
                         help='Train with GPU')
     args = parser.parse_args()
 
-    uid = 'benchmark'
+    uid = 'scaling'
     dataset_dir = os.path.join(args.root_dataset, 'torch', 'cifar10')
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)
