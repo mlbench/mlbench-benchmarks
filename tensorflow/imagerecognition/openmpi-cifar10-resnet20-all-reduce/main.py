@@ -89,7 +89,8 @@ def define_graph(inputs, labels, is_training, batch_size, replicas_to_aggregate)
     return train_op, loss, metrics, hooks
 
 
-def main(is_ps, rank, world_size, cluster_spec, batch_size, replicas_to_aggregate):
+def main(is_ps, run_id, rank, world_size, cluster_spec, batch_size,
+         replicas_to_aggregate):
     logging.info("Initial.")
 
     job_name = "ps" if is_ps else "worker"
@@ -178,7 +179,9 @@ def main(is_ps, rank, world_size, cluster_spec, batch_size, replicas_to_aggregat
                     metrics=metrics,
                     lr_scheduler_level='epoch',
                     max_train_steps=164,
-                    train_epochs=164)
+                    train_epochs=164,
+                    run_id=run_id,
+                    rank=rank)
 
                 cf.train_and_eval(lr_tensor_name=lr_tensor_name)
 
@@ -242,5 +245,5 @@ if __name__ == "__main__":
     batch_size = 128
     replicas_to_aggregate = len(cluster_spec['worker'])
 
-    main(is_ps, rank, world_size, cluster_spec,
+    main(is_ps, args.run_id, rank, world_size, cluster_spec,
          batch_size, replicas_to_aggregate)
