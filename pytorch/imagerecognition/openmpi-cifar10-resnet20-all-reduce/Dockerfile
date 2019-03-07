@@ -1,12 +1,13 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v0.4.1
+FROM mlbench-pytorch-base:1.0-test
 
 # -------------------- Debug --------------------
 # RUN apt-get update && apt-get install -y vim net-tools
 
 # The reference implementation and user defined implementations are placed here.
 ADD ./requirements.txt /requirements.txt
-RUN pip install --no-cache-dir -r /requirements.txt
-
+ADD ./mlbench_core-1.3.3-py3-none-any.whl /mlbench_core-1.3.3-py3-none-any.whl
+#RUN pip install --no-cache-dir -r /requirements.txt
+RUN pip install /mlbench_core-1.3.3-py3-none-any.whl
 RUN mkdir /codes
 ADD ./main.py /codes/main.py
 
