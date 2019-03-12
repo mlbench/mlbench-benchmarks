@@ -125,8 +125,6 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
 
         dist.barrier()
         for epoch in range(0, train_epochs):
-            scheduler.step()
-
             trainstep(train_loader)
 
             is_best = validstep(val_loader)
