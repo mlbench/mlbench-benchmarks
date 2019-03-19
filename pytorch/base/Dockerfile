@@ -1,22 +1,34 @@
-FROM nvidia/cuda:9.0-cudnn7-devel-ubuntu16.04 as mlbench-worker-base
+#FROM nvidia/cuda:9.0-cudnn7-devel-ubuntu16.04 as mlbench-worker-base
+FROM nvidia/cuda:9.0-devel-ubuntu16.04 as mlbench-worker-base
+LABEL maintainer "NVIDIA CORPORATION <cudatools@nvidia.com>"
+
+ENV CUDNN_VERSION 7.3.0.29
+LABEL com.nvidia.cudnn.version="${CUDNN_VERSION}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+            libcudnn7=$CUDNN_VERSION-1+cuda9.0 \
+            libcudnn7-dev=$CUDNN_VERSION-1+cuda9.0 && \
+    apt-mark hold libcudnn7 && \
+    rm -rf /var/lib/apt/lists/*
+
 # TODO: reduce size and complexity of image.
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  gcc \
-  make \
-  libc-dev \
-  musl-dev \
-  openssh-server \
-  g++ \
-  git \
-  curl \
-  sudo \
-  iproute2
+    gcc \
+    make \
+    libc-dev \
+    musl-dev \
+    openssh-server \
+    g++ \
+    git \
+    curl \
+    sudo \
+    iproute2
 
 # -------------------- SSH --------------------
 RUN cat /etc/ssh/ssh_config | grep -v StrictHostKeyChecking > /etc/ssh/ssh_config.new && \
-  echo "    StrictHostKeyChecking no" >> /etc/ssh/ssh_config.new && \
-  mv /etc/ssh/ssh_config.new /etc/ssh/ssh_config
+    echo "    StrictHostKeyChecking no" >> /etc/ssh/ssh_config.new && \
+    mv /etc/ssh/ssh_config.new /etc/ssh/ssh_config
 
 ARG SSH_USER=root
 ENV SSH_USER=$SSH_USER
@@ -30,49 +42,49 @@ VOLUME /ssh-key/$SSH_USER
 # -----–––---------------------- Cuda Dependency --------------------
 RUN echo "deb http://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu1604/x86_64 /" > /etc/apt/sources.list.d/nvidia-ml.list
 RUN apt-get update && apt-get install -y --no-install-recommends --allow-downgrades \
-  --allow-change-held-packages \
-  libnccl2=2.0.5-3+cuda9.0 \
-  libnccl-dev=2.0.5-3+cuda9.0 &&\
-  rm -rf /var/lib/apt/lists/*
+        --allow-change-held-packages \
+         libnccl2=2.0.5-3+cuda9.0 \
+         libnccl-dev=2.0.5-3+cuda9.0 &&\
+     rm -rf /var/lib/apt/lists/*
 
 # -------------------- Conda environment --------------------
 RUN curl -o ~/miniconda.sh -O  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  && \
-  sh ~/miniconda.sh -b -p /conda && rm ~/miniconda.sh
+     sh ~/miniconda.sh -b -p /conda && rm ~/miniconda.sh
 ENV PATH /conda/bin:$PATH
 ENV LD_LIBRARY_PATH /conda/lib:$LD_LIBRARY_PATH
 
 # TODO: Source code in Channel Anaconda can be outdated, switch to conda-forge if posible.
 RUN conda install -y -c anaconda numpy pyyaml scipy mkl setuptools cmake cffi mkl-include typing \
-  && conda install -y -c mingfeima mkldnn \
-  && conda install -y -c soumith magma-cuda90 \
-  && conda install -y -c conda-forge python-lmdb opencv numpy \
-  && conda clean --all -y
+    && conda install -y -c mingfeima mkldnn \
+    && conda install -y -c soumith magma-cuda90 \
+    && conda install -y -c conda-forge python-lmdb opencv numpy \
+    && conda clean --all -y
 
 # -------------------- Open MPI --------------------
 RUN mkdir /.openmpi/
 RUN apt-get update && apt-get install -y --no-install-recommends wget \
-  && wget https://www.open-mpi.org/software/ompi/v3.0/downloads/openmpi-3.0.0.tar.gz\
-  && gunzip -c openmpi-3.0.0.tar.gz | tar xf - \
-  && cd openmpi-3.0.0 \
-  && ./configure --prefix=/.openmpi/ --with-cuda\
-  && make all install \
-  && rm /openmpi-3.0.0.tar.gz \
-  && rm -rf /openmpi-3.0.0 \
-  && apt-get remove -y wget
+    && wget https://www.open-mpi.org/software/ompi/v3.0/downloads/openmpi-3.0.0.tar.gz\
+    && gunzip -c openmpi-3.0.0.tar.gz | tar xf - \
+    && cd openmpi-3.0.0 \
+    && ./configure --prefix=/.openmpi/ --with-cuda\
+    && make all install \
+    && rm /openmpi-3.0.0.tar.gz \
+    && rm -rf /openmpi-3.0.0 \
+    && apt-get remove -y wget
 
 ENV PATH /.openmpi/bin:$PATH
 ENV LD_LIBRARY_PATH /.openmpi/lib:$LD_LIBRARY_PATH
 
 RUN mv /.openmpi/bin/mpirun /.openmpi/bin/mpirun.real && \
-  echo '#!/bin/bash' > /.openmpi/bin/mpirun && \
-  echo "/.openmpi/bin/mpirun.real" '--allow-run-as-root "$@"' >> /.openmpi/bin/mpirun && \
-  chmod a+x /.openmpi/bin/mpirun
+    echo '#!/bin/bash' > /.openmpi/bin/mpirun && \
+    echo "/.openmpi/bin/mpirun.real" '--allow-run-as-root "$@"' >> /.openmpi/bin/mpirun && \
+    chmod a+x /.openmpi/bin/mpirun
 
 # Configure OpenMPI to run good defaults:
 #   --bind-to none --map-by slot --mca btl_tcp_if_exclude lo,docker0
 RUN echo "hwloc_base_binding_policy = none" >> /.openmpi/etc/openmpi-mca-params.conf && \
-  echo "rmaps_base_mapping_policy = slot" >> /.openmpi/etc/openmpi-mca-params.conf && \
-  echo "btl_tcp_if_exclude = lo,docker0" >> /.openmpi/etc/openmpi-mca-params.conf
+    echo "rmaps_base_mapping_policy = slot" >> /.openmpi/etc/openmpi-mca-params.conf && \
+    echo "btl_tcp_if_exclude = lo,docker0" >> /.openmpi/etc/openmpi-mca-params.conf
 
 # configure the path.
 RUN echo export 'PATH=$HOME/conda/envs/pytorch-py$PYTHON_VERSION/bin:$HOME/.openmpi/bin:$PATH' >> ~/.bashrc
@@ -84,13 +96,14 @@ ENV CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
 
 # Install basic dependencies
 # RUN git clone --recursive https://github.com/pytorch/pytorch && cd pytorch && python setup.py install
-RUN git clone --branch v0.4.1 --recursive https://github.com/pytorch/pytorch && \
-  cd pytorch && \
-  git submodule update --init && \
-  TORCH_CUDA_ARCH_LIST="3.5 3.7 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
-  CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" \
-  pip install -v . && \
-  rm -rf /pytorch
+RUN git clone --recursive https://github.com/pytorch/pytorch && \
+    cd pytorch && \
+    git checkout tags/v1.0.0 && \
+    git submodule update --init && \
+    TORCH_CUDA_ARCH_LIST="3.5 3.7 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
+    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" \
+    pip install -v . && \
+    rm -rf /pytorch
 
 
 
