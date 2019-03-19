@@ -1,4 +1,8 @@
-"""Training Logistic Regression for epsilon dataset."""
+"""Training Logistic Regression for epsilon dataset.
+
+This implements the Linear Learning benchmark task, see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-linear-learning-logistic-regression-epsilon
+for more details.
+"""
 
 import os
 import argparse

@@ -1,5 +1,8 @@
 r"""Distributed TensorFlow with Monitored Training Session.
 
+This implements the 1a image recognition benchmark task, see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-image-classification-resnet-cifar-10
+for more details
+
 Adapted from official tutorial::
 
     https://www.tensorflow.org/deploy/distributed

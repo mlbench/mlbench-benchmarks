@@ -1,5 +1,8 @@
 """Training ResNet for CIFAR-10 dataset.
 
+This implements the 1a image recognition benchmark task, see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-image-classification-resnet-cifar-10
+for more details.
+
 .. code-block:: bash
     mpirun -n 2 --oversubscribe python resnet_cifar10_mpi.py --run_id 1
 """
