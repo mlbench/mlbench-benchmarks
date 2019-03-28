@@ -95,10 +95,7 @@ RUN echo "deb [arch=amd64] http://storage.googleapis.com/bazel-apt stable jdk1.8
 
 # clone tensorflow repo
 WORKDIR /tmp
-RUN git clone https://github.com/tensorflow/tensorflow.git && \
-    cd tensorflow && \
-    git fetch origin +refs/pull/26720/merge && \
-    git checkout FETCH_HEAD
+RUN git clone https://github.com/tensorflow/tensorflow.git
 
 # configure for CUDA 9.0 with mpi
 WORKDIR /tmp/tensorflow
