@@ -83,32 +83,34 @@ RUN conda install -y -c conda-forge mpi4py
 # -------- Build Tensorflow with MPI support------
 # source install instructions https://www.tensorflow.org/install/source
 # pip six numpy wheel setuptools already installed
-RUN pip install mock
-RUN pip install keras_applications==1.0.6 --no-deps
-RUN pip install keras_preprocessing==1.0.5 --no-deps
+RUN pip install mock && \
+    pip install keras_applications==1.0.6 --no-deps && \
+    pip install keras_preprocessing==1.0.5 --no-deps
 
 # install bazel
-RUN echo "deb [arch=amd64] http://storage.googleapis.com/bazel-apt stable jdk1.8" | sudo tee /etc/apt/sources.list.d/bazel.list
-RUN curl https://bazel.build/bazel-release.pub.gpg | sudo apt-key add -
-RUN apt-get update && apt-get -y install bazel
-RUN apt-get install --only-upgrade bazel
+RUN echo "deb [arch=amd64] http://storage.googleapis.com/bazel-apt stable jdk1.8" | sudo tee /etc/apt/sources.list.d/bazel.list && \
+    curl https://bazel.build/bazel-release.pub.gpg | sudo apt-key add - && \
+    apt-get update && apt-get -y install bazel && \
+    apt-get install --only-upgrade bazel
 
 # clone tensorflow repo
-RUN git clone https://github.com/tensorflow/tensorflow.git
-RUN cd tensorflow
-RUN git fetch origin +refs/pull/26720/merge
-RUN git checkout FETCH_HEAD
+WORKDIR /tmp
+RUN git clone https://github.com/tensorflow/tensorflow.git && \
+    cd tensorflow && \
+    git fetch origin +refs/pull/26720/merge && \
+    git checkout FETCH_HEAD
 
 # configure for CUDA 9.0 with mpi
-RUN echo -ne '\n''\n'n'\n''\n'N'\n'y'\n'9'\n''\n''\n''\n'N'\n''\n''\n'N'\n''\n'y'\n''\n''\n'N'\n' | ./configure
+WORKDIR /tmp/tensorflow
+RUN echo '\n''\n'n'\n''\n'N'\n'y'\n'9'\n''\n''\n''\n'N'\n''\n''\n'N'\n''\n'y'\n''\n''\n'N'\n' | ./configure
 
 # build package with bazel
-RUN bazel build --config=opt --config=cuda //tensorflow/tools/pip_package:build_pip_package
-RUN ./bazel-bin/tensorflow/tools/pip_package/build_pip_package /tmp/tensorflow_pkg
+RUN bazel build --config=opt --config=cuda //tensorflow/tools/pip_package:build_pip_package && \
+    ./bazel-bin/tensorflow/tools/pip_package/build_pip_package /tmp/tensorflow_pkg
 
 # install with pip
-RUN TFLOW_PKG_VER=$(ls /tmp/tensorflow_pkg/)
-RUN pip install /tmp/tensorflow_pkg/$TFLOW_PKG_VER
+RUN TFLOW_PKG_VER=$(ls /tmp/tensorflow_pkg/) && \
+    pip install /tmp/tensorflow_pkg/$TFLOW_PKG_VER
 
 # -------------------- Others --------------------
 RUN echo "orte_keep_fqdn_hostnames=t" >> /.openmpi/etc/openmpi-mca-params.conf
@@ -119,6 +121,8 @@ RUN chmod a+x /usr/local/bin/entrypoint.sh
 # Copy your application code to the container (make sure you create a .dockerignore file if any large files or directories should be excluded)
 RUN mkdir /app/
 WORKDIR /app/
+RUN git clone https://github.com/mlbench/mlbench-benchmarks.git
+RUN pip install -r /app/mlbench-benchmarks/tensorflow/imagerecognition/openmpi-cifar10-resnet20-all-reduce/requirements.txt
 
 EXPOSE 22
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
