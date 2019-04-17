@@ -10,15 +10,17 @@ import argparse
 import json
 import os
 
-from mlbench_core.controlflow.pytorch import TrainValidation
+from mlbench_core.controlflow.pytorch import train_round, validation_round
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsEvaluationControlFlow
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
+from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
+from mlbench_core.evaluation.goals import task1_time_to_accuracy_light_goal, task1_time_to_accuracy_goal
 
 import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
@@ -27,7 +29,7 @@ from torch.utils.data import DataLoader
 
 
 def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
-         gpu=False):
+         gpu=False, light_target=False):
     r"""Main logic."""
     num_parallel_workers = 2
     use_cuda = gpu
@@ -109,33 +111,40 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
         freq=CheckpointFreq.NONE)
 
     if not validation_only:
-        controlflow = TrainValidation(
-            model=model,
-            optimizer=optimizer,
-            loss_function=loss_function,
-            metrics=metrics,
-            scheduler=scheduler,
-            batch_size=batch_size,
-            train_epochs=train_epochs,
-            rank=rank,
-            world_size=world_size,
-            run_id=run_id,
-            dtype='fp32',
-            validate=True,
-            schedule_per='epoch',
-            checkpoint=checkpointer,
-            transform_target_type=None,
-            average_models=True,
-            use_cuda=use_cuda,
-            max_batch_per_epoch=max_batch_per_epoch)
+        if light_target:
+            goal = task1_time_to_accuracy_light_goal
+        else:
+            goal = task1_time_to_accuracy_goal
 
-        controlflow.run(
-            dataloader_train=train_loader,
-            dataloader_val=val_loader,
-            dataloader_train_fn=None,
-            dataloader_val_fn=None,
-            resume=False,
-            repartition_per_epoch=False)
+        tracker = Tracker(metrics, run_id, rank, goal=goal)
+
+        dist.barrier()
+
+        tracker.start()
+
+        for epoch in range(0, train_epochs):
+            train_round(train_loader, model, optimizer, loss_function, metrics,
+                        scheduler, 'fp32', schedule_per='epoch',
+                        transform_target_type=None, use_cuda=use_cuda,
+                        max_batch_per_epoch=max_batch_per_epoch,
+                        tracker=tracker)
+
+            is_best = validation_round(val_loader, model,  loss_function,
+                                       metrics, run_id, rank, 'fp32',
+                                       transform_target_type=None,
+                                       use_cuda=use_cuda,
+                                       max_batch_per_epoch=max_batch_per_epoch,
+                                       tracker=tracker)
+
+            checkpointer.save(tracker, model,
+                              optimizer, scheduler,
+                              tracker.current_epoch, is_best)
+
+            tracker.epoch_end()
+            if tracker.goal_reached:
+                print("Goal Reached!")
+                return
+
     else:
         cecf = CheckpointsEvaluationControlFlow(
             ckpt_dir=ckpt_run_dir,
@@ -173,7 +182,11 @@ if __name__ == '__main__':
                         default=False, help='Only validate from checkpoints.')
     parser.add_argument('--gpu', action='store_true', default=False,
                         help='Train with GPU')
+    parser.add_argument('--light', action='store_true', default=False,
+                        help='Train to light target metric goal')
     args = parser.parse_args()
+
+    print(args)
 
     uid = 'benchmark'
     dataset_dir = os.path.join(args.root_dataset, 'torch', 'cifar10')
@@ -184,4 +197,5 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True)
 
     main(args.run_id, dataset_dir, ckpt_run_dir,
-         output_dir, args.validation_only, args.gpu)
+         output_dir, validation_only=args.validation_only, gpu=args.gpu,
+         light_target=args.light)
