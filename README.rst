@@ -37,7 +37,7 @@ Features
 Community
 ---------
 
-About us: `Authors <https://mlbench.readthedocs.io/en/latest/authors.html>`_:
+About us: `Authors <https://mlbench.readthedocs.io/en/latest/authors.html>`_
 
 Mailing list: https://groups.google.com/d/forum/mlbench
 

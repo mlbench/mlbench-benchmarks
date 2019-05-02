@@ -1,1 +1,1 @@
-mlbench-core==1.3.3
+mlbench-core==1.3.4.dev2
