@@ -21,6 +21,7 @@ from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
+from mlbench_core.evaluation.goals import task1_time_to_accuracy_light_goal, task1_time_to_accuracy_goal
 
 import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
@@ -28,7 +29,7 @@ from torch.utils.data import DataLoader
 
 
 def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
-         gpu=False):
+         gpu=False, light_target=False):
     r"""Main logic."""
     num_parallel_workers = 2
     use_cuda = gpu
@@ -115,9 +116,17 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
         freq=CheckpointFreq.NONE)
 
     if not validation_only:
-        tracker = Tracker(metrics, run_id, rank)
+        if light_target:
+            goal = task1_time_to_accuracy_light_goal
+        else:
+            goal = task1_time_to_accuracy_goal
+
+        tracker = Tracker(metrics, run_id, rank, goal=goal)
 
         dist.barrier()
+
+        tracker.start()
+
         for epoch in range(0, train_epochs):
             train_round(train_loader, model, optimizer, loss_function, metrics,
                         scheduler, 'fp32', schedule_per='epoch',
@@ -137,6 +146,10 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
                               tracker.current_epoch, is_best)
 
             tracker.epoch_end()
+
+            if tracker.goal_reached:
+                print("Goal Reached!")
+                return
     else:
         cecf = CheckpointsEvaluationControlFlow(
             ckpt_dir=ckpt_run_dir,
@@ -174,6 +187,8 @@ if __name__ == '__main__':
                         default=False, help='Only validate from checkpoints.')
     parser.add_argument('--gpu', action='store_true', default=False,
                         help='Train with GPU')
+    parser.add_argument('--light', action='store_true', default=False,
+                        help='Train to light target metric goal')
     args = parser.parse_args()
 
     uid = 'scaling'
@@ -185,4 +200,5 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True)
 
     main(args.run_id, dataset_dir, ckpt_run_dir,
-         output_dir, args.validation_only, args.gpu)
+         output_dir, validation_only=args.validation_only, gpu=args.gpu,
+         light_target=args.light)

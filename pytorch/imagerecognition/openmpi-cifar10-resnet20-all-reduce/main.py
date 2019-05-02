@@ -141,6 +141,7 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
                               tracker.current_epoch, is_best)
 
             tracker.epoch_end()
+
             if tracker.goal_reached:
                 print("Goal Reached!")
                 return
