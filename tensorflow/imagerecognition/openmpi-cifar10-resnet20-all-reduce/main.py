@@ -22,10 +22,11 @@ from mlbench_core.utils.tensorflow import initialize_backends, default_session_c
 from mlbench_core.models.tensorflow.resnet_model import Cifar10Model
 from mlbench_core.dataset.imagerecognition.tensorflow.cifar10 import DatasetCifar
 from mlbench_core.lr_scheduler.tensorflow.lr import manual_stepping
-from mlbench_core.evaluation.tensorflow.metrics import topk_accuracy_with_logits
+from mlbench_core.evaluation.tensorflow.metrics import TopKAccuracy
 from mlbench_core.evaluation.tensorflow.criterion import \
     softmax_cross_entropy_with_logits_v2_l2_regularized
-from mlbench_core.controlflow.tensorflow.train_validation import TrainValidation
+from mlbench_core.controlflow.tensorflow.train_validation import train_round, validation_round
+from mlbench_core.utils import Tracker
 
 
 def define_graph(inputs, labels, is_training, batch_size, replicas_to_aggregate):
@@ -49,8 +50,8 @@ def define_graph(inputs, labels, is_training, batch_size, replicas_to_aggregate)
 
     # Use Top K accuracy as metrics
     metrics = [
-        topk_accuracy_with_logits(logits, labels, k=1),
-        topk_accuracy_with_logits(logits, labels, k=5),
+        TopKAccuracy(logits, labels, topk=1),
+        TopKAccuracy(logits, labels, topk=5),
     ]
 
     global_step = tf.train.get_or_create_global_step()
@@ -170,23 +171,24 @@ def main(is_ps, run_id, rank, world_size, cluster_spec, batch_size,
 
                 logging.info("Begin training.")
 
-                cf = TrainValidation(
-                    batch_size=batch_size,
-                    train_set_init_op=data_loader.train_init_op,
-                    validation_set_init_op=data_loader.validation_init_op,
-                    num_batches_per_epoch_for_train=data_loader.num_batches_per_epoch_for_train,
-                    num_batches_per_epoch_for_validation=data_loader.num_batches_per_epoch_for_eval,
-                    train_op=train_op,
-                    sess=sess,
-                    loss=loss,
-                    metrics=metrics,
-                    lr_scheduler_level='epoch',
-                    max_train_steps=164,
-                    train_epochs=164,
-                    run_id=run_id,
-                    rank=rank)
+                final_epoch = 164
 
-                cf.train_and_eval(lr_tensor_name=lr_tensor_name)
+                tracker = Tracker(metrics, run_id, rank)
+
+                for i_epoch in range(final_epoch):
+                    logging.debug("=> Epoch {}".format(i_epoch))
+
+                    train_round(sess, data_loader.train_init_op, train_op,
+                                loss, metrics, batch_size,
+                                data_loader.num_batches_per_epoch_for_train,
+                                tracker, lr_tensor=lr_tensor_name,
+                                lr_scheduler_level='epoch')
+
+                    validation_round(sess, data_loader.validation_init_op,
+                                     loss, metrics, batch_size,
+                                     data_loader.num_batches_per_epoch_for_eval,
+                                     tracker)
+                    tracker.epoch_end()
 
             logging.info("Finish.")
 

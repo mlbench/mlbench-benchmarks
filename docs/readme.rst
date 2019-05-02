@@ -29,5 +29,7 @@ Image Recognition
 
 .. include:: ../pytorch/imagerecognition/openmpi-cifar10-resnet20-all-reduce-scaling/Readme.rst
 
+.. include:: ../pytorch/linearmodels/openmpi-epsilon-logistic-regression-all-reduce/Readme.rst
+
 .. include:: ../tensorflow/imagerecognition/openmpi-cifar10-resnet20-all-reduce/Readme.rst
 
