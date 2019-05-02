@@ -27,6 +27,7 @@ from mlbench_core.evaluation.tensorflow.criterion import \
     softmax_cross_entropy_with_logits_v2_l2_regularized
 from mlbench_core.controlflow.tensorflow.train_validation import train_round, validation_round
 from mlbench_core.utils import Tracker
+from mlbench_core.evaluation.goals import task1_time_to_accuracy_light_goal, task1_time_to_accuracy_goal
 
 
 def define_graph(inputs, labels, is_training, batch_size, replicas_to_aggregate):
@@ -94,7 +95,7 @@ def define_graph(inputs, labels, is_training, batch_size, replicas_to_aggregate)
 
 
 def main(is_ps, run_id, rank, world_size, cluster_spec, batch_size,
-         replicas_to_aggregate):
+         replicas_to_aggregate, light_target=False):
     logging.info("Initial.")
 
     job_name = "ps" if is_ps else "worker"
@@ -173,7 +174,13 @@ def main(is_ps, run_id, rank, world_size, cluster_spec, batch_size,
 
                 final_epoch = 164
 
-                tracker = Tracker(metrics, run_id, rank)
+                if light_target:
+                    goal = task1_time_to_accuracy_light_goal
+                else:
+                    goal = task1_time_to_accuracy_goal
+
+                tracker = Tracker(metrics, run_id, rank, goal=goal)
+                tracker.start()
 
                 for i_epoch in range(final_epoch):
                     logging.debug("=> Epoch {}".format(i_epoch))
@@ -189,6 +196,10 @@ def main(is_ps, run_id, rank, world_size, cluster_spec, batch_size,
                                      data_loader.num_batches_per_epoch_for_eval,
                                      tracker)
                     tracker.epoch_end()
+
+                    if tracker.goal_reached:
+                        print("Goal Reached!")
+                        return
 
             logging.info("Finish.")
 
@@ -221,6 +232,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process run parameters')
     parser.add_argument('--run_id', type=str, help='The id of the run')
     parser.add_argument('--hosts', type=str, help='The hosts participating in this run')
+    parser.add_argument('--light', action='store_true', default=False,
+                        help='Train to light target metric goal')
     args = parser.parse_args()
 
     rank = int(os.environ['OMPI_COMM_WORLD_RANK'])
@@ -251,4 +264,4 @@ if __name__ == "__main__":
     replicas_to_aggregate = len(cluster_spec['worker'])
 
     main(is_ps, args.run_id, rank, world_size, cluster_spec,
-         batch_size, replicas_to_aggregate)
+         batch_size, replicas_to_aggregate, light_target=args.light)
