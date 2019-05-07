@@ -1,38 +1,42 @@
-r"""Example of using mlbench : CIFAR10 + Resnet20 + MPI + GPU
+"""Training Logistic Regression for epsilon dataset.
 
-.. code-block:: bash
-    mpirun -n 2 --oversubscribe python resnet_cifar10_mpi.py --run_id 1
+This implements the Linear Learning benchmark task, see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-linear-learning-logistic-regression-epsilon
+for more details.
 """
+
+import os
 import argparse
 import json
-import os
 
-from mlbench_core.controlflow.pytorch import TrainValidation
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsEvaluationControlFlow
-from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
+from mlbench_core.controlflow.pytorch import train_round, validation_round
+from mlbench_core.dataset.linearmodels.pytorch.dataloader import load_libsvm_lmdb, partition_dataset_by_rank
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
-from mlbench_core.models.pytorch.resnet import ResNetCIFAR
+from mlbench_core.models.pytorch.linear_models import LogisticRegression
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
+from mlbench_core.utils import Tracker
 
 import torch.distributed as dist
-from torch.nn.modules.loss import CrossEntropyLoss
-from torch.optim.lr_scheduler import MultiStepLR
+from mlbench_core.evaluation.pytorch.criterion import BCELossRegularized
+from mlbench_core.lr_scheduler.pytorch.lr import TimeDecayLR, SQRTTimeDecayLR
 from torch.utils.data import DataLoader
 
-# If used in Kubernetes, then comment this line.
-os.environ['MLBENCH_IN_DOCKER'] = ""
 
-
-def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
+def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
+         gpu=False):
     r"""Main logic."""
-    num_parallel_workers = 2
-    use_cuda = True
+    num_parallel_workers = 0
+    use_cuda = gpu
     max_batch_per_epoch = None
-    train_epochs = 164
-    batch_size = 128
+    train_epochs = 20
+    batch_size = 100
+
+    n_features = 2000
+    alpha = 200
+    l1_coef = 0.0000025
+    l2_coef = 0.0
 
     initialize_backends(
         comm_backend='mpi',
@@ -47,41 +51,24 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    model = ResNetCIFAR(
-        resnet_size=20,
-        bottleneck=False,
-        num_classes=10,
-        version=1)
+    model = LogisticRegression(n_features)
 
-    optimizer = CentralizedSGD(
-        world_size=world_size,
-        model=model,
-        lr=0.1,
-        momentum=0.9,
-        weight_decay=1e-4,
-        nesterov=False)
+    optimizer = CentralizedSGD(world_size=world_size, model=model, lr=0.1)
 
     # Create a learning rate scheduler for an optimizer
-    scheduler = MultiStepLR(
-        optimizer,
-        milestones=[82, 109],
-        gamma=0.1)
+    scheduler = SQRTTimeDecayLR(optimizer, alpha)
 
     # A loss_function for computing the loss
-    loss_function = CrossEntropyLoss()
+    loss_function = BCELossRegularized(l1=l1_coef, l2=l2_coef, model=model)
 
     if use_cuda:
         model = model.cuda()
         loss_function = loss_function.cuda()
 
-    # Metrics like Top 1/5 Accuracy
-    metrics = [
-        TopKAccuracy(topk=1),
-        TopKAccuracy(topk=5)
-    ]
+    metrics = []
 
-    train_set = CIFAR10V1(dataset_dir, train=True, download=True)
-    val_set = CIFAR10V1(dataset_dir, train=False, download=True)
+    train_set = load_libsvm_lmdb('epsilon-train', dataset_dir)
+    val_set = load_libsvm_lmdb('epsilon-train', dataset_dir)
 
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
     val_set = partition_dataset_by_rank(val_set, rank, world_size)
@@ -108,33 +95,29 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
         freq=CheckpointFreq.NONE)
 
     if not validation_only:
-        controlflow = TrainValidation(
-            model=model,
-            optimizer=optimizer,
-            loss_function=loss_function,
-            metrics=metrics,
-            scheduler=scheduler,
-            batch_size=batch_size,
-            train_epochs=train_epochs,
-            rank=rank,
-            world_size=world_size,
-            run_id=run_id,
-            dtype='fp32',
-            validate=True,
-            schedule_per='epoch',
-            checkpoint=checkpointer,
-            transform_target_type=None,
-            average_models=True,
-            use_cuda=use_cuda,
-            max_batch_per_epoch=max_batch_per_epoch)
 
-        controlflow.run(
-            dataloader_train=train_loader,
-            dataloader_val=val_loader,
-            dataloader_train_fn=None,
-            dataloader_val_fn=None,
-            resume=False,
-            repartition_per_epoch=False)
+        tracker = Tracker(metrics, run_id, rank)
+
+        dist.barrier()
+        for epoch in range(0, train_epochs):
+            train_round(train_loader, model, optimizer, loss_function, metrics,
+                        scheduler, 'fp32', schedule_per='epoch',
+                        transform_target_type=None, use_cuda=use_cuda,
+                        max_batch_per_epoch=max_batch_per_epoch,
+                        tracker=tracker)
+
+            is_best = validation_round(val_loader, model,  loss_function,
+                                       metrics, run_id, rank, 'fp32',
+                                       transform_target_type=None,
+                                       use_cuda=use_cuda,
+                                       max_batch_per_epoch=max_batch_per_epoch,
+                                       tracker=tracker)
+
+            checkpointer.save(tracker, model,
+                              optimizer, scheduler,
+                              tracker.current_epoch, is_best)
+
+            tracker.epoch_end()
     else:
         cecf = CheckpointsEvaluationControlFlow(
             ckpt_dir=ckpt_run_dir,
@@ -170,15 +153,17 @@ if __name__ == '__main__':
                         help='Default root directory to output.')
     parser.add_argument('--validation_only', action='store_true',
                         default=False, help='Only validate from checkpoints.')
+    parser.add_argument('--gpu', action='store_true', default=False,
+                        help='Train with GPU')
     args = parser.parse_args()
 
-    uid = 'template'
-    dataset_dir = os.path.join(args.root_dataset, 'torch', 'cifar10')
+    uid = 'benchmark'
+    dataset_dir = os.path.join(args.root_dataset, 'torch', 'epsilon/epsilon_train.lmdb')
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)
-    os.makedirs(dataset_dir, exist_ok=True)
+
     os.makedirs(ckpt_run_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
     main(args.run_id, dataset_dir, ckpt_run_dir,
-         output_dir, args.validation_only)
+         output_dir, args.validation_only), args.gpu

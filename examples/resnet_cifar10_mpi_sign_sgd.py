@@ -1,7 +1,9 @@
 r"""Example of using mlbench : CIFAR10 + Resnet20 + MPI + GPU
 
+For the moment, it is not distributed.
+
 .. code-block:: bash
-    mpirun -n 2 --oversubscribe python resnet_cifar10_mpi.py --run_id 1
+    mpirun -n 1 --oversubscribe python resnet_cifar10_mpi_sign_sgd.py --run_id 1
 """
 import argparse
 import json
@@ -12,7 +14,7 @@ from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsE
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
-from mlbench_core.optim.pytorch.optim import CentralizedSGD
+from mlbench_core.optim.pytorch.optim import SignSGD
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
@@ -53,10 +55,9 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False):
         num_classes=10,
         version=1)
 
-    optimizer = CentralizedSGD(
-        world_size=world_size,
-        model=model,
-        lr=0.1,
+    optimizer = SignSGD(
+        params=model.parameters(),
+        lr=0.01,
         momentum=0.9,
         weight_decay=1e-4,
         nesterov=False)
@@ -172,7 +173,7 @@ if __name__ == '__main__':
                         default=False, help='Only validate from checkpoints.')
     args = parser.parse_args()
 
-    uid = 'template'
+    uid = 'signsgd'
     dataset_dir = os.path.join(args.root_dataset, 'torch', 'cifar10')
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)

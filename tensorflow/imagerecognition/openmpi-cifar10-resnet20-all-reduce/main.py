@@ -1,5 +1,8 @@
 r"""Distributed TensorFlow with Monitored Training Session.
 
+This implements the 1a image recognition benchmark task, see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-image-classification-resnet-cifar-10
+for more details
+
 Adapted from official tutorial::
 
     https://www.tensorflow.org/deploy/distributed
@@ -19,10 +22,12 @@ from mlbench_core.utils.tensorflow import initialize_backends, default_session_c
 from mlbench_core.models.tensorflow.resnet_model import Cifar10Model
 from mlbench_core.dataset.imagerecognition.tensorflow.cifar10 import DatasetCifar
 from mlbench_core.lr_scheduler.tensorflow.lr import manual_stepping
-from mlbench_core.evaluation.tensorflow.metrics import topk_accuracy_with_logits
+from mlbench_core.evaluation.tensorflow.metrics import TopKAccuracy
 from mlbench_core.evaluation.tensorflow.criterion import \
     softmax_cross_entropy_with_logits_v2_l2_regularized
-from mlbench_core.controlflow.tensorflow.train_validation import TrainValidation
+from mlbench_core.controlflow.tensorflow.train_validation import train_round, validation_round
+from mlbench_core.utils import Tracker
+from mlbench_core.evaluation.goals import task1_time_to_accuracy_light_goal, task1_time_to_accuracy_goal
 
 
 def define_graph(inputs, labels, is_training, batch_size, replicas_to_aggregate):
@@ -46,8 +51,8 @@ def define_graph(inputs, labels, is_training, batch_size, replicas_to_aggregate)
 
     # Use Top K accuracy as metrics
     metrics = [
-        topk_accuracy_with_logits(logits, labels, k=1),
-        topk_accuracy_with_logits(logits, labels, k=5),
+        TopKAccuracy(logits, labels, topk=1),
+        TopKAccuracy(logits, labels, topk=5),
     ]
 
     global_step = tf.train.get_or_create_global_step()
@@ -89,7 +94,8 @@ def define_graph(inputs, labels, is_training, batch_size, replicas_to_aggregate)
     return train_op, loss, metrics, hooks
 
 
-def main(is_ps, rank, world_size, cluster_spec, batch_size, replicas_to_aggregate):
+def main(is_ps, run_id, rank, world_size, cluster_spec, batch_size,
+         replicas_to_aggregate, light_target=False):
     logging.info("Initial.")
 
     job_name = "ps" if is_ps else "worker"
@@ -166,21 +172,34 @@ def main(is_ps, rank, world_size, cluster_spec, batch_size, replicas_to_aggregat
 
                 logging.info("Begin training.")
 
-                cf = TrainValidation(
-                    batch_size=batch_size,
-                    train_set_init_op=data_loader.train_init_op,
-                    validation_set_init_op=data_loader.validation_init_op,
-                    num_batches_per_epoch_for_train=data_loader.num_batches_per_epoch_for_train,
-                    num_batches_per_epoch_for_validation=data_loader.num_batches_per_epoch_for_eval,
-                    train_op=train_op,
-                    sess=sess,
-                    loss=loss,
-                    metrics=metrics,
-                    lr_scheduler_level='epoch',
-                    max_train_steps=164,
-                    train_epochs=164)
+                final_epoch = 164
 
-                cf.train_and_eval(lr_tensor_name=lr_tensor_name)
+                if light_target:
+                    goal = task1_time_to_accuracy_light_goal
+                else:
+                    goal = task1_time_to_accuracy_goal
+
+                tracker = Tracker(metrics, run_id, rank, goal=goal)
+                tracker.start()
+
+                for i_epoch in range(final_epoch):
+                    logging.debug("=> Epoch {}".format(i_epoch))
+
+                    train_round(sess, data_loader.train_init_op, train_op,
+                                loss, metrics, batch_size,
+                                data_loader.num_batches_per_epoch_for_train,
+                                tracker, lr_tensor=lr_tensor_name,
+                                lr_scheduler_level='epoch')
+
+                    validation_round(sess, data_loader.validation_init_op,
+                                     loss, metrics, batch_size,
+                                     data_loader.num_batches_per_epoch_for_eval,
+                                     tracker)
+                    tracker.epoch_end()
+
+                    if tracker.goal_reached:
+                        print("Goal Reached!")
+                        return
 
             logging.info("Finish.")
 
@@ -213,6 +232,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process run parameters')
     parser.add_argument('--run_id', type=str, help='The id of the run')
     parser.add_argument('--hosts', type=str, help='The hosts participating in this run')
+    parser.add_argument('--light', action='store_true', default=False,
+                        help='Train to light target metric goal')
     args = parser.parse_args()
 
     rank = int(os.environ['OMPI_COMM_WORLD_RANK'])
@@ -242,5 +263,5 @@ if __name__ == "__main__":
     batch_size = 128
     replicas_to_aggregate = len(cluster_spec['worker'])
 
-    main(is_ps, rank, world_size, cluster_spec,
-         batch_size, replicas_to_aggregate)
+    main(is_ps, args.run_id, rank, world_size, cluster_spec,
+         batch_size, replicas_to_aggregate, light_target=args.light)
