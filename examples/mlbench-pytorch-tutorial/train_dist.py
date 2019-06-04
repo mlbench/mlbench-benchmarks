@@ -11,11 +11,13 @@ import torch.optim as optim
 
 from math import ceil
 from random import Random
-from torch.multiprocessing import Process
-from torch.autograd import Variable
 from torchvision import datasets, transforms
 
-from mlbench_core.api import ApiClient
+from mlbench_core.utils import Tracker
+from mlbench_core.evaluation.goals import task1_time_to_accuracy_goal
+from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
+from mlbench_core.controlflow.pytorch import validation_round
+
 import logging
 
 
@@ -76,8 +78,8 @@ class Net(nn.Module):
         return F.log_softmax(x)
 
 
-def partition_dataset():
-    """ Partitioning MNIST """
+def partition_dataset_train():
+    """ Partitioning MNIST train set"""
     dataset = datasets.MNIST(
         './data',
         train=True,
@@ -96,6 +98,26 @@ def partition_dataset():
     return train_set, bsz
 
 
+def partition_dataset_val():
+    """ Partitioning MNIST validation set"""
+    dataset = datasets.MNIST(
+        './data',
+        train=False,
+        download=True,
+        transform=transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307, ), (0.3081, ))
+        ]))
+    size = dist.get_world_size()
+    bsz = int(128 / float(size))
+    partition_sizes = [1.0 / size for _ in range(size)]
+    partition = DataPartitioner(dataset, partition_sizes)
+    partition = partition.use(dist.get_rank())
+    val_set = torch.utils.data.DataLoader(
+        partition, batch_size=bsz, shuffle=True)
+    return val_set, bsz
+
+
 def average_gradients(model):
     """ Gradient averaging. """
     size = float(dist.get_world_size())
@@ -107,40 +129,70 @@ def average_gradients(model):
 def run(rank, size, run_id):
     """ Distributed Synchronous SGD Example """
     torch.manual_seed(1234)
-    train_set, bsz = partition_dataset()
+    train_set, bsz = partition_dataset_train()
+    val_set, bsz_val = partition_dataset_val()
     model = Net()
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
+    metrics = [
+        TopKAccuracy(topk=1),
+        TopKAccuracy(topk=5)
+    ]
+    loss_func = nn.NLLLoss()
 
-    api_client = ApiClient(
-        in_cluster=True,
-        k8s_namespace='default',
-        label_selector='component=master,app=mlbench')
+    goal = task1_time_to_accuracy_goal
+
+    tracker = Tracker(metrics, run_id, rank, goal=goal)
 
     num_batches = ceil(len(train_set.dataset) / float(bsz))
+    num_batches_val = ceil(len(val_set.dataset) / float(bsz_val))
+
+    tracker.start()
+
     for epoch in range(10):
+        tracker.train()
+
         epoch_loss = 0.0
         for data, target in train_set:
+            tracker.batch_start()
+
             optimizer.zero_grad()
             output = model(data)
-            loss = F.nll_loss(output, target)
+
+            tracker.record_batch_step('forward')
+
+            loss = loss_func(output, target)
             epoch_loss += loss.data.item()
+
+            tracker.record_batch_step('loss')
+
             loss.backward()
+
+            tracker.record_batch_step('backward')
+
             average_gradients(model)
             optimizer.step()
-        logging.debug('Rank %s, epoch %s: %s',
-            dist.get_rank(), epoch,
-            epoch_loss / num_batches)
 
-        api_client.post_metric(
-            run_id,
-            "Rank {} loss".format(rank),
-            epoch_loss / num_batches)
+            tracker.batch_end()
+
+        logging.debug('Rank %s, epoch %s: %s',
+                      dist.get_rank(), epoch,
+                      epoch_loss / num_batches)
+
+        validation_round(val_set, model, loss_func, metrics, run_id, rank,
+                         'fp32', transform_target_type=None, use_cuda=False,
+                         max_batch_per_epoch=num_batches_val, tracker=tracker)
+
+        tracker.epoch_end()
+
+        if tracker.goal_reached:
+            logging.debug("Goal Reached!")
+            return
 
 
 def init_processes(rank, run_id, hosts, backend='gloo'):
     """ Initialize the distributed environment. """
     hosts = hosts.split(',')
-    os.environ['MASTER_ADDR'] = hosts[0] # first worker is the master worker
+    os.environ['MASTER_ADDR'] = hosts[0]  # first worker is the master worker
     os.environ['MASTER_PORT'] = '29500'
     world_size = len(hosts)
     os.environ['WORLD_SIZE'] = str(world_size)

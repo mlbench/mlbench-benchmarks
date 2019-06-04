@@ -1,6 +1,6 @@
-FROM mlbench/mlbench-pytorch-base:1.1.0
+FROM mlbench/mlbench-pytorch-base:latest
 
-RUN pip install mlbench-core==1.1.0
+RUN pip install mlbench-core==1.4.4
 
 # The reference implementation and user defined implementations are placed here.
 # ADD ./requirements.txt /requirements.txt
