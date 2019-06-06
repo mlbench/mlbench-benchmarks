@@ -129,8 +129,10 @@ def average_gradients(model):
 def run(rank, size, run_id):
     """ Distributed Synchronous SGD Example """
     torch.manual_seed(1234)
+    logging.info("Loading Dataset")
     train_set, bsz = partition_dataset_train()
     val_set, bsz_val = partition_dataset_val()
+    logging.info("Setting up models and training")
     model = Net()
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
     metrics = [
@@ -148,11 +150,13 @@ def run(rank, size, run_id):
 
     tracker.start()
 
+    logging.info("Starting train loop")
+
     for epoch in range(10):
         tracker.train()
 
         epoch_loss = 0.0
-        for data, target in train_set:
+        for i, (data, target) in enumerate(train_set):
             tracker.batch_start()
 
             optimizer.zero_grad()
@@ -173,6 +177,10 @@ def run(rank, size, run_id):
             optimizer.step()
 
             tracker.batch_end()
+
+            logging.info("Batch: {}, Loss: {}".format(i, loss.item()))
+
+        tracker.record_loss(epoch_loss, num_batches, log_to_api=True)
 
         logging.debug('Rank %s, epoch %s: %s',
                       dist.get_rank(), epoch,
