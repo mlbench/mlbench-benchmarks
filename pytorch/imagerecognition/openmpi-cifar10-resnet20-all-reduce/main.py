@@ -28,24 +28,13 @@ from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.data import DataLoader
 
 
-def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
-         gpu=False, light_target=False):
+def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
+               validation_only=False, use_cuda=False, light_target=False):
     r"""Main logic."""
     num_parallel_workers = 2
-    use_cuda = gpu
     max_batch_per_epoch = None
     train_epochs = 164
     batch_size = 128
-
-    initialize_backends(
-        comm_backend='mpi',
-        logging_level='INFO',
-        logging_file=os.path.join(output_dir, 'mlbench.log'),
-        use_cuda=use_cuda,
-        seed=42,
-        cudnn_deterministic=False,
-        ckpt_run_dir=ckpt_run_dir,
-        delete_existing_ckpts=not validation_only)
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -167,6 +156,23 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
         val_stats = cecf.evaluate_by_epochs(val_loader)
         with open(os.path.join(output_dir, "val_stats.json"), 'w') as f:
             json.dump(val_stats, f)
+
+
+def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
+         gpu=False, light_target=False):
+    r"""Main logic."""
+
+    with initialize_backends(
+            comm_backend='mpi',
+            logging_level='INFO',
+            logging_file=os.path.join(output_dir, 'mlbench.log'),
+            use_cuda=gpu,
+            seed=42,
+            cudnn_deterministic=False,
+            ckpt_run_dir=ckpt_run_dir,
+            delete_existing_ckpts=not validation_only):
+        train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
+                   validation_only, use_cuda=gpu, light_target=light_target)
 
 
 if __name__ == '__main__':
