@@ -1,0 +1,9 @@
+mlbench-core==2.3.0
+pytelegraf==0.3.3
+pymongo==3.10.1
+influxdb==5.2.3
+kubernetes==10.0.1
+jinja2==2.11.1
+spacy==2.2.3
+scikit-learn==0.22.1
+networkx==2.4
