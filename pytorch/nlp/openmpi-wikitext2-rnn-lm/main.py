@@ -1,188 +1,351 @@
-# -*- coding: utf-8 -*-
+"""Training ResNet for CIFAR-10 dataset.
+
+This implements the 1a image recognition benchmark task, see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-image-classification-resnet-cifar-10
+for more details.
+
+.. code-block:: bash
+    mpirun -n 2 --oversubscribe python resnet_cifar10_mpi.py --run_id 1
+"""
+import argparse
+import json
 import os
-import datetime
+import logging
 
-import torch
+from mlbench_core.controlflow.pytorch import train_round, validation_round
+from mlbench_core.dataset.nlp.pytorch import Wikitext2
+from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
+from mlbench_core.evaluation.pytorch.metrics import Perplexity
+from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
+from mlbench_core.models.pytorch.nlp import RNNLM
+from mlbench_core.optim.pytorch.optim import CentralizedSGD
+from mlbench_core.utils import Tracker, AverageMeter
+from mlbench_core.utils.pytorch import initialize_backends
+from mlbench_core.utils.pytorch.distributed import global_average
+from mlbench_core.evaluation.goals import task3_time_to_preplexity_light_goal, task3_time_to_preplexity_goal
+
 import torch.distributed as dist
-import torch.nn as nn
+from torch.nn.modules.loss import CrossEntropyLoss
+from torch.utils.data import DataLoader
+from torch.nn.utils import clip_grad_norm_
+import torch
+import torchtext
 
-from parameters import get_args
-
-from pcode.models.data_parallel_wrapper import AllReduceDataParallel
-
-import pcode.create_dataset as create_dataset
-import pcode.create_optimizer as create_optimizer
-import pcode.create_metrics as create_metrics
-import pcode.create_model as create_model
-import pcode.create_scheduler as create_scheduler
-
-import pcode.utils.topology as topology
-import pcode.utils.checkpoint as checkpoint
-import pcode.utils.op_paths as op_paths
-import pcode.utils.stat_tracker as stat_tracker
-import pcode.utils.logging as logging
+LOG_EVERY_N_BATCHES = 25
+logger = logging.getLogger('mlbench')
 
 
-def init_distributed_world(conf, backend):
-    if backend == "mpi":
-        os.environ['MASTER_ADDR'] = conf.hosts[0] # first worker is the master worker
-        os.environ['MASTER_PORT'] = '29500'
+def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
+               validation_only=False, use_cuda=False, light_target=False):
+    """Train loop"""
+    num_parallel_workers = 2
+    max_batch_per_epoch = None
+    train_epochs = 164
+    batch_size = 256
+    rnn_n_hidden = 200
+    rnn_n_layers = 2
+    rnn_tie_weights = True
+    rnn_clip = 0.25
+    rnn_bptt_len = 35
+    drop_rate = 0.0
+    rnn_weight_norm = False
+    dtype = 'fp32'
 
-        os.environ['WORLD_SIZE'] = str(conf.n_mpi_process)
-        os.environ['RANK'] = str(conf.rank)
-        dist.init_process_group(
-            "mpi",
-            rank=conf.rank,
-            world_size=conf.n_mpi_process)
-    elif backend == "nccl" or backend == "gloo":
-        # init the process group.
-        _tmp_path = os.path.join(conf.checkpoint, "tmp", conf.timestamp)
-        op_paths.build_dirs(_tmp_path)
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
 
-        dist_init_file = os.path.join(_tmp_path, "dist_init")
+    train_set = Wikitext2(dataset_dir, download=True, train=True)
+    val_set = Wikitext2(dataset_dir, text_field=train_set.text_field, download=False, train=False)
 
-        torch.distributed.init_process_group(
-            backend=backend,
-            init_method="file://" + os.path.abspath(dist_init_file),
-            timeout=datetime.timedelta(seconds=120),
-            world_size=conf.n_mpi_process,
-            rank=conf.local_rank,
-        )
-    else:
-        raise NotImplementedError
+    train_set.text_field.build_vocab(train_set, vectors=None,
+                                     vectors_cache=None)
 
+    train_loader, _ = torchtext.data.BPTTIterator.splits(
+        (train_set, val_set),
+        batch_size=batch_size * world_size,
+        bptt_len=rnn_bptt_len,
+        device="cuda:0" if use_cuda else None,
+        repeat=False,
+        shuffle=True,
+    )
+    _, val_loader = torchtext.data.BPTTIterator.splits(
+        (train_set, val_set),
+        batch_size=batch_size,
+        bptt_len=rnn_bptt_len,
+        device="cuda:0" if use_cuda else None,
+        shuffle=False,
+    )
 
-def main(conf):
-    try:
-        init_distributed_world(conf, backend=conf.backend)
-        conf.distributed = True and conf.n_mpi_process > 1
-    except AttributeError as e:
-        print(f"failed to init the distributed world: {e}.")
-        conf.distributed = False
+    n_tokens, emb_size = len(train_set.text_field.vocab), rnn_n_hidden
 
-    # init the config.
-    init_config(conf)
+    model = RNNLM(
+        ntoken=n_tokens,
+        ninp=emb_size,
+        nhid=rnn_n_hidden,
+        nlayers=rnn_n_layers,
+        tie_weights=rnn_tie_weights,
+        dropout=drop_rate,
+        weight_norm=rnn_weight_norm,)
 
-    # create dataset.
-    data_loader = create_dataset.define_dataset(conf, force_shuffle=True)
-
-    # create model
-    model = create_model.define_model(conf, data_loader=data_loader)
-
-    # define the lr scheduler.
-    scheduler = create_scheduler.Scheduler(conf)
-
-    # define the optimizer.
-    optimizer = create_optimizer.define_optimizer(conf, model)
-
-    # add model with data-parallel wrapper.
-    if conf.graph.on_cuda:
-        if conf.n_sub_process > 1:
-            model = torch.nn.DataParallel(model, device_ids=conf.graph.device)
-
-    # (optional) reload checkpoint
-    checkpoint.maybe_resume_from_checkpoint(conf, model, optimizer)
-
-    # train amd evaluate model.
-    if "rnn_lm" in conf.arch:
-        from pcode.distributed_running_nlp import train_and_validate
-
-        # safety check.
-        assert (
-            conf.n_sub_process == 1
-        ), "our current data-parallel wrapper does not support RNN."
-
-        # define the criterion and metrics.
-        criterion = nn.CrossEntropyLoss(reduction="mean")
-        criterion = criterion.cuda() if conf.graph.on_cuda else criterion
-        metrics = create_metrics.Metrics(
-            model.module if "DataParallel" == model.__class__.__name__ else model,
-            task="language_modeling",
-        )
-
-        # define the best_perf tracker, either empty or from the checkpoint.
-        best_tracker = stat_tracker.BestPerf(
-            best_perf=None if "best_perf" not in conf else conf.best_perf,
-            larger_is_better=False,
-        )
-        scheduler.set_best_tracker(best_tracker)
-
-        # get train_and_validate_func
-        train_and_validate_fn = train_and_validate
-    else:
-        from pcode.distributed_running_cv import train_and_validate
-
-        # define the criterion and metrics.
-        criterion = nn.CrossEntropyLoss(reduction="mean")
-        criterion = criterion.cuda() if conf.graph.on_cuda else criterion
-        metrics = create_metrics.Metrics(
-            model.module if "DataParallel" == model.__class__.__name__ else model,
-            task="classification",
-        )
-
-        # define the best_perf tracker, either empty or from the checkpoint.
-        best_tracker = stat_tracker.BestPerf(
-            best_perf=None if "best_perf" not in conf else conf.best_perf,
-            larger_is_better=True,
-        )
-        scheduler.set_best_tracker(best_tracker)
-
-        # get train_and_validate_func
-        train_and_validate_fn = train_and_validate
-
-    # save arguments to disk.
-    checkpoint.save_arguments(conf)
-
-    # start training.
-    train_and_validate_fn(
-        conf,
+    optimizer = CentralizedSGD(
+        world_size=world_size,
         model=model,
-        criterion=criterion,
-        scheduler=scheduler,
-        optimizer=optimizer,
-        metrics=metrics,
-        data_loader=data_loader,
-    )
+        lr=0.2,
+        momentum=0.9,
+        weight_decay=1e-4,
+        nesterov=False)
+
+    # Create a learning rate scheduler for an optimizer
+    scheduler = MultistepLearningRatesWithWarmup(
+        optimizer,
+        world_size=world_size,
+        milestones=[82, 109],
+        gamma=0.1,
+        lr=0.1,
+        warmup_duration=5,
+        warmup_linear_scaling=True,
+        warmup_init_lr=None)
+
+    # A loss_function for computing the loss
+    loss_function = CrossEntropyLoss(reduction="mean")
+
+    if use_cuda:
+        model = model.cuda()
+        loss_function = loss_function.cuda()
+
+    # Metrics like Top 1/5 Accuracy
+    metrics = [
+        Perplexity()
+    ]
+
+    if light_target:
+        goal = task3_time_to_preplexity_light_goal
+    else:
+        goal = task3_time_to_preplexity_goal
+
+    tracker = Tracker(metrics, run_id, rank, goal=goal)
+
+    dist.barrier()
+
+    tracker.start()
+
+    num_batches_per_device_train = len(train_loader)
+
+    for epoch in range(0, train_epochs):
+        _hidden = (
+            model.init_hidden(batch_size)
+        )
+
+        # configure local step.
+        for batch_idx, batch in enumerate(train_loader):
+            model.train()
+
+            tracker.train()
+            scheduler.step()
+
+            input = batch.text[
+                :,
+                rank
+                * batch_size : (rank + 1)
+                * batch_size,
+            ]
+            target = batch.target[
+                :,
+                rank
+                * batch_size : (rank + 1)
+                * batch_size,
+            ]
+
+            # repackage the hidden.
+            _hidden = (
+                model.repackage_hidden(_hidden)
+            )
+
+            # inference and get current performance.
+            tracker.batch_start()
+            optimizer.zero_grad()
+
+            tracker.record_batch_step('init')
+
+            output, _hidden = model(input, _hidden)
+
+            tracker.record_batch_step('forward')
+
+            loss = loss_function(output.view(-1, n_tokens), target.contiguous().view(-1))
+
+            tracker.record_batch_step('loss')
+
+            loss.backward()
+
+            tracker.record_batch_step('backward')
+
+            # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
+            clip_grad_norm_(model.parameters(), rnn_clip)
+            optimizer.step()
+            tracker.batch_end()
+
+            progress = batch_idx / num_batches_per_device_train
+
+            log_to_api = (batch_idx % LOG_EVERY_N_BATCHES == 0
+                          or batch_idx == num_batches_per_device_train)
+
+            for metric in metrics:
+                metric_value = metric(loss, output, target).item()
+
+                if tracker:
+                    tracker.record_metric(
+                        metric,
+                        metric_value,
+                        output.size()[0],
+                        log_to_api=log_to_api)
+
+            status = "Epoch {:5.2f} Batch {:4}: ".format(progress, batch_idx)
+
+            logger.info(status + str(tracker))
+
+            tracker.record_loss(loss, 1, log_to_api=True)
+
+        # finish one epoch training and to decide if we want to val our model.
+        tracker.validation()
+        tracker.validation_start()
+
+        # each worker finish one epoch training.
+        model.eval()
+
+        losses = AverageMeter()
+        for metric in metrics:
+            metric.reset()
+
+        # Each worker computer their own losses and metrics
+        with torch.no_grad():
+
+            _hidden = model.init_hidden(batch_size)
+
+            for batch in val_loader:
+                _hidden = model.repackage_hidden(_hidden)
+                input, target = batch.text, batch.target
+                # Inference
+                output, _hidden = model(input, _hidden)
+
+                # Compute loss
+                loss = loss_function(output.view(-1, n_tokens), target.contiguous().view(-1))
+
+                # Update loss
+                losses.update(loss.item(), input.size(0))
+
+                # Update metrics
+                for metric in metrics:
+                    metric_value = metric(loss, output, target)
+                    metric.update(metric_value, input.size(0))
+
+        # Aggregate metrics and loss for all workers
+        metrics_averages = {metric: metric.average().item()
+                            for metric in metrics}
+        loss_average = global_average(losses.sum, losses.count).item()
+        tracker.validation_end()
+
+        for metric, value in metrics_averages.items():
+            tracker.record_metric(metric, value, log_to_api=True)
+
+            global_metric_value = global_average(value, 1).item()
+
+            if rank == 0:
+                tracker.record_stat(
+                    "global_{}".format(metric.name),
+                    global_metric_value,
+                    log_to_api=True)
+
+        if rank == 0:
+            logger.info(
+                '{} for rank {}:(best epoch {}, current epoch {}): {:.3f}'.format(
+                    tracker.primary_metric.name,
+                    tracker.rank,
+                    tracker.best_epoch,
+                    tracker.current_epoch,
+                    tracker.best_metric_value))
+
+        tracker.record_loss(loss, log_to_api=True)
+
+        global_loss = global_average(loss_average, 1).item()
+
+        if rank == 0:
+            tracker.record_stat(
+                "global_loss",
+                global_loss,
+                log_to_api=True)
+        tracker.validation_end()
+
+        tracker.epoch_end()
+
+        if tracker.goal_reached:
+            print("Goal Reached!")
+            return
+        # train_round(train_loader, model, optimizer, loss_function, metrics,
+        #             scheduler, 'fp32', schedule_per='epoch',
+        #             transform_target_type=None, use_cuda=use_cuda,
+        #             max_batch_per_epoch=max_batch_per_epoch,
+        #             tracker=tracker)
+
+        # is_best = validation_round(val_loader, model,  loss_function,
+        #                            metrics, run_id, rank, 'fp32',
+        #                            transform_target_type=None,
+        #                            use_cuda=use_cuda,
+        #                            max_batch_per_epoch=max_batch_per_epoch,
+        #                            tracker=tracker)
+
+        # checkpointer.save(tracker, model,
+        #                   optimizer, scheduler,
+        #                   tracker.current_epoch, is_best)
+
+        # tracker.epoch_end()
+
+        # if tracker.goal_reached:
+        #     print("Goal Reached!")
+        #     return
 
 
-def init_config(conf):
-    # define the graph for the computation.
-    cur_rank = conf.rank# dist.get_rank() if conf.distributed else 0
-    conf.graph = topology.define_graph_topology(
-        graph_topology=conf.graph_topology,
-        world=conf.world,
-        n_mpi_process=conf.n_mpi_process,  # the # of total main processes.
-        n_sub_process=conf.n_sub_process,  # the # of subprocess for each main process.
-        comm_device=conf.comm_device,
-        on_cuda=conf.on_cuda,
-        rank=cur_rank,
-    )
-    conf.is_centralized = conf.graph_topology == "complete"
+def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
+         gpu=False, light_target=False):
+    r"""Main logic."""
 
-    # re-configure batch_size if sub_process > 1.
-    if conf.n_sub_process > 1:
-        conf.batch_size = conf.batch_size * conf.n_sub_process
-
-    # configure cuda related.
-    if conf.graph.on_cuda:
-        assert torch.cuda.is_available()
-        torch.manual_seed(conf.manual_seed)
-        torch.cuda.manual_seed(conf.manual_seed)
-        torch.cuda.set_device(conf.graph.device[0])
-        torch.backends.cudnn.enabled = True
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.deterministic = True if conf.train_fast else False
-
-    # define checkpoint for logging.
-    checkpoint.init_checkpoint(conf)
-
-    # configure logger.
-    conf.logger = logging.Logger(conf.checkpoint_dir)
-
-    # display the arguments' info.
-    logging.display_args(conf)
+    with initialize_backends(
+            comm_backend='mpi',
+            logging_level='INFO',
+            logging_file=os.path.join(output_dir, 'mlbench.log'),
+            use_cuda=gpu,
+            seed=42,
+            cudnn_deterministic=False,
+            ckpt_run_dir=ckpt_run_dir,
+            delete_existing_ckpts=not validation_only):
+        train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
+                   validation_only, use_cuda=gpu, light_target=light_target)
 
 
-if __name__ == "__main__":
-    conf = get_args()
-    main(conf)
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Process run parameters')
+    parser.add_argument('--run_id', type=str, default='1',
+                        help='The id of the run')
+    parser.add_argument('--root-dataset', type=str, default='/datasets',
+                        help='Default root directory to dataset.')
+    parser.add_argument('--root-checkpoint', type=str, default='/checkpoint',
+                        help='Default root directory to checkpoint.')
+    parser.add_argument('--root-output', type=str, default='/output',
+                        help='Default root directory to output.')
+    parser.add_argument('--validation_only', action='store_true',
+                        default=False, help='Only validate from checkpoints.')
+    parser.add_argument('--gpu', action='store_true', default=False,
+                        help='Train with GPU')
+    parser.add_argument('--light', action='store_true', default=False,
+                        help='Train to light target metric goal')
+    args = parser.parse_args()
+
+    uid = 'scaling'
+    dataset_dir = os.path.join(args.root_dataset, 'torch', 'wikitext')
+    ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
+    output_dir = os.path.join(args.root_output, uid)
+    os.makedirs(dataset_dir, exist_ok=True)
+    os.makedirs(ckpt_run_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+
+    main(args.run_id, dataset_dir, ckpt_run_dir,
+         output_dir, validation_only=args.validation_only, gpu=args.gpu,
+         light_target=args.light)
