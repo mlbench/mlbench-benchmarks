@@ -4,32 +4,30 @@ This implements the Linear Learning benchmark task, see https://mlbench.readthed
 for more details.
 """
 
-import os
 import argparse
 import json
+import os
 
+import torch.distributed as dist
 from mlbench_core.controlflow.pytorch import train_round, validation_round
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsEvaluationControlFlow
 from mlbench_core.dataset.linearmodels.pytorch.dataloader import load_libsvm_lmdb
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
-from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
+from mlbench_core.evaluation.pytorch.criterion import BCELossRegularized
+from mlbench_core.lr_scheduler.pytorch.lr import SQRTTimeDecayLR
 from mlbench_core.models.pytorch.linear_models import LogisticRegression
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
+from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
-from mlbench_core.utils import Tracker
-
-import torch.distributed as dist
-from mlbench_core.evaluation.pytorch.criterion import BCELossRegularized
-from mlbench_core.lr_scheduler.pytorch.lr import TimeDecayLR, SQRTTimeDecayLR
 from torch.utils.data import DataLoader
 
 
-def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
-         gpu=False):
+def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
+               validation_only=False, use_cuda=False, light_target=False):
     r"""Main logic."""
     num_parallel_workers = 0
-    use_cuda = gpu
     max_batch_per_epoch = None
     train_epochs = 20
     batch_size = 100
@@ -38,16 +36,6 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
     alpha = 200
     l1_coef = 0.0000025
     l2_coef = 0.0
-
-    initialize_backends(
-        comm_backend='mpi',
-        logging_level='INFO',
-        logging_file=os.path.join(output_dir, 'mlbench.log'),
-        use_cuda=use_cuda,
-        seed=42,
-        cudnn_deterministic=False,
-        ckpt_run_dir=ckpt_run_dir,
-        delete_existing_ckpts=not validation_only)
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -142,6 +130,23 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
             json.dump(val_stats, f)
 
 
+def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
+         gpu=False, light_target=False):
+    r"""Main logic."""
+
+    with initialize_backends(
+            comm_backend='mpi',
+            logging_level='INFO',
+            logging_file=os.path.join(output_dir, 'mlbench.log'),
+            use_cuda=gpu,
+            seed=42,
+            cudnn_deterministic=False,
+            ckpt_run_dir=ckpt_run_dir,
+            delete_existing_ckpts=not validation_only):
+        train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
+                   validation_only, use_cuda=gpu, light_target=light_target)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process run parameters')
     parser.add_argument('--run_id', type=str, default='1',
@@ -156,6 +161,8 @@ if __name__ == '__main__':
                         default=False, help='Only validate from checkpoints.')
     parser.add_argument('--gpu', action='store_true', default=False,
                         help='Train with GPU')
+    parser.add_argument('--light', action='store_true', default=False,
+                        help='Train to light target metric goal')
     args = parser.parse_args()
 
     uid = 'benchmark'
@@ -166,5 +173,11 @@ if __name__ == '__main__':
     os.makedirs(ckpt_run_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
-    main(args.run_id, dataset_dir, ckpt_run_dir,
-         output_dir, args.validation_only), args.gpu
+    train_loop(args.run_id, dataset_dir, ckpt_run_dir,
+               output_dir, args.validation_only), args.gpu
+
+
+
+
+
+
