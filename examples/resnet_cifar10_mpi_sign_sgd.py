@@ -11,7 +11,8 @@ import os
 
 from mlbench_core.controlflow.pytorch import TrainValidation
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsEvaluationControlFlow
-from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1, partition_dataset_by_rank
+from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1
+from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
 from mlbench_core.optim.pytorch.optim import SignSGD
