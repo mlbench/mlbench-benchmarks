@@ -1,6 +1,8 @@
 """Training Logistic Regression for epsilon dataset.
 
-This implements the Linear Learning benchmark task, see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-linear-learning-logistic-regression-epsilon
+This implements the Linear Learning benchmark task,
+see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-linear
+-learning-logistic-regression-epsilon
 for more details.
 """
 
@@ -10,8 +12,9 @@ import os
 
 import torch.distributed as dist
 from mlbench_core.controlflow.pytorch import train_round, validation_round
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsEvaluationControlFlow
-from mlbench_core.dataset.linearmodels.pytorch.dataloader import load_libsvm_lmdb
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
+    CheckpointsEvaluationControlFlow
+from mlbench_core.dataset.linearmodels.pytorch.epsilon import Epsilon
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.pytorch.criterion import BCELossRegularized
 from mlbench_core.lr_scheduler.pytorch.lr import SQRTTimeDecayLR
@@ -56,8 +59,9 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
 
     metrics = []
 
-    train_set = load_libsvm_lmdb('epsilon-train', dataset_dir)
-    val_set = load_libsvm_lmdb('epsilon-train', dataset_dir)
+    train_set = Epsilon(dataset_dir, train=True, download=True)
+    val_set = Epsilon(dataset_dir, train=False,
+                      download=False)  # No need to download again
 
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
     val_set = partition_dataset_by_rank(val_set, rank, world_size)
@@ -95,7 +99,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
                         max_batch_per_epoch=max_batch_per_epoch,
                         tracker=tracker)
 
-            is_best = validation_round(val_loader, model,  loss_function,
+            is_best = validation_round(val_loader, model, loss_function,
                                        metrics, run_id, rank, 'fp32',
                                        transform_target_type=None,
                                        use_cuda=use_cuda,
@@ -166,18 +170,12 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     uid = 'benchmark'
-    dataset_dir = os.path.join(args.root_dataset, 'torch', 'epsilon/epsilon_train.lmdb')
+    dataset_dir = os.path.join(args.root_dataset, 'torch', 'epsilon')
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)
-
+    os.makedirs(dataset_dir, exist_ok=True)
     os.makedirs(ckpt_run_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
-    train_loop(args.run_id, dataset_dir, ckpt_run_dir,
-               output_dir, args.validation_only), args.gpu
-
-
-
-
-
-
+    main(args.run_id, dataset_dir, ckpt_run_dir,
+         output_dir, args.validation_only), args.gpu
