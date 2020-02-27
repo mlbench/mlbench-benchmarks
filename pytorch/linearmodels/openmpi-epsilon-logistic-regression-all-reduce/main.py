@@ -14,9 +14,11 @@ import torch.distributed as dist
 from mlbench_core.controlflow.pytorch import train_round, validation_round
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
     CheckpointsEvaluationControlFlow
-from mlbench_core.dataset.linearmodels.pytorch.epsilon import Epsilon
+from mlbench_core.dataset.linearmodels.pytorch.dataloader import \
+    load_and_download_lmdb
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.pytorch.criterion import BCELossRegularized
+from mlbench_core.evaluation.pytorch.metrics import F1Score, DiceCoefficient
 from mlbench_core.lr_scheduler.pytorch.lr import SQRTTimeDecayLR
 from mlbench_core.models.pytorch.linear_models import LogisticRegression
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
@@ -37,8 +39,8 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
 
     n_features = 2000
     alpha = 200
-    l1_coef = 0.0000025
-    l2_coef = 0.0
+    l1_coef = 0.0
+    l2_coef = 0.0000025
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -57,11 +59,11 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
         model = model.cuda()
         loss_function = loss_function.cuda()
 
-    metrics = []
+    metrics = [F1Score(),
+               DiceCoefficient()]
 
-    train_set = Epsilon(dataset_dir, train=True, download=True)
-    val_set = Epsilon(dataset_dir, train=False,
-                      download=False)  # No need to download again
+    train_set = load_and_download_lmdb("epsilon", "train", dataset_dir)
+    val_set = load_and_download_lmdb("epsilon", "test", dataset_dir)
 
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
     val_set = partition_dataset_by_rank(val_set, rank, world_size)
@@ -88,10 +90,13 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
         freq=CheckpointFreq.NONE)
 
     if not validation_only:
-
+        # TODO: add goal
         tracker = Tracker(metrics, run_id, rank)
 
         dist.barrier()
+
+        tracker.start()
+
         for epoch in range(0, train_epochs):
             train_round(train_loader, model, optimizer, loss_function, metrics,
                         scheduler, 'fp32', schedule_per='epoch',
