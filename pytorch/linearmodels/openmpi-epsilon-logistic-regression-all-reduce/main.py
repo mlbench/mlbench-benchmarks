@@ -4,6 +4,8 @@ This implements the Linear Learning benchmark task,
 see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-linear
 -learning-logistic-regression-epsilon
 for more details.
+
+Values are taken from https://arxiv.org/pdf/1705.07751.pdf
 """
 
 import argparse
@@ -17,8 +19,11 @@ from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
 from mlbench_core.dataset.linearmodels.pytorch.dataloader import \
     load_and_download_lmdb
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
+from mlbench_core.evaluation.goals import task2_time_to_accuracy_goal, \
+    task2_time_to_accuracy_light_goal
 from mlbench_core.evaluation.pytorch.criterion import BCELossRegularized
-from mlbench_core.evaluation.pytorch.metrics import F1Score, DiceCoefficient
+from mlbench_core.evaluation.pytorch.metrics import F1Score, DiceCoefficient, \
+    Accuracy
 from mlbench_core.lr_scheduler.pytorch.lr import SQRTTimeDecayLR
 from mlbench_core.models.pytorch.linear_models import LogisticRegression
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
@@ -40,7 +45,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
     n_features = 2000
     alpha = 200
     l1_coef = 0.0
-    l2_coef = 0.0000025
+    l2_coef = 0.0000025  # Regluarization 1 / train_size ( 1 / 400,000)
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -60,7 +65,8 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
         loss_function = loss_function.cuda()
 
     metrics = [F1Score(),
-               DiceCoefficient()]
+               DiceCoefficient(),
+               Accuracy()]
 
     train_set = load_and_download_lmdb("epsilon", "train", dataset_dir)
     val_set = load_and_download_lmdb("epsilon", "test", dataset_dir)
@@ -90,8 +96,12 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
         freq=CheckpointFreq.NONE)
 
     if not validation_only:
-        # TODO: add goal
-        tracker = Tracker(metrics, run_id, rank)
+        if light_target:
+            goal = task2_time_to_accuracy_light_goal
+        else:
+            goal = task2_time_to_accuracy_goal
+            
+        tracker = Tracker(metrics, run_id, rank, goal=goal)
 
         dist.barrier()
 
