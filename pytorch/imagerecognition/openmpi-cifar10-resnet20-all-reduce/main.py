@@ -134,6 +134,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
 
             if tracker.goal_reached:
                 print("Goal Reached!")
+                time.sleep(10)
                 return
 
     else:

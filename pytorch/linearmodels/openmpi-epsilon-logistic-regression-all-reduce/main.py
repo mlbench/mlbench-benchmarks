@@ -11,13 +11,13 @@ Values are taken from https://arxiv.org/pdf/1705.07751.pdf
 import argparse
 import json
 import os
+import time
 
 import torch.distributed as dist
 from mlbench_core.controlflow.pytorch import train_round, validation_round
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
     CheckpointsEvaluationControlFlow
-from mlbench_core.dataset.linearmodels.pytorch.dataloader import \
-    load_and_download_lmdb
+from mlbench_core.dataset.linearmodels.pytorch.dataloader import LMDBDataset
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import task2_time_to_accuracy_goal, \
     task2_time_to_accuracy_light_goal
@@ -64,12 +64,14 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
         model = model.cuda()
         loss_function = loss_function.cuda()
 
-    metrics = [F1Score(),
-               DiceCoefficient(),
-               Accuracy()]
+    metrics = [Accuracy(),  # Binary accuracy with threshold 0.5
+               F1Score(),
+               DiceCoefficient()]
 
-    train_set = load_and_download_lmdb("epsilon", "train", dataset_dir)
-    val_set = load_and_download_lmdb("epsilon", "test", dataset_dir)
+    train_set = LMDBDataset(name="epsilon", data_type="train",
+                            root=dataset_dir)
+    val_set = LMDBDataset(name="epsilon", data_type="test",
+                          root=dataset_dir)
 
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
     val_set = partition_dataset_by_rank(val_set, rank, world_size)
@@ -100,7 +102,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
             goal = task2_time_to_accuracy_light_goal
         else:
             goal = task2_time_to_accuracy_goal
-            
+
         tracker = Tracker(metrics, run_id, rank, goal=goal)
 
         dist.barrier()
@@ -126,6 +128,11 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
                               tracker.current_epoch, is_best)
 
             tracker.epoch_end()
+
+            if tracker.goal_reached:
+                print("Goal Reached!")
+                time.sleep(10)
+                return
     else:
         cecf = CheckpointsEvaluationControlFlow(
             ckpt_dir=ckpt_run_dir,

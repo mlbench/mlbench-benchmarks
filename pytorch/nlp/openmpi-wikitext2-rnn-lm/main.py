@@ -7,28 +7,27 @@ for more details.
     mpirun -n 2 --oversubscribe python resnet_cifar10_mpi.py --run_id 1
 """
 import argparse
-import json
-import os
 import logging
+import os
+import time
 
-from mlbench_core.controlflow.pytorch import train_round, validation_round
+import torch
+import torch.distributed as dist
+import torchtext
 from mlbench_core.dataset.nlp.pytorch import Wikitext2
-from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
+from mlbench_core.evaluation.goals import \
+    task3_time_to_preplexity_light_goal, \
+    task3_time_to_preplexity_goal
 from mlbench_core.evaluation.pytorch.metrics import Perplexity
-from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
+from mlbench_core.lr_scheduler.pytorch.lr import \
+    MultistepLearningRatesWithWarmup
 from mlbench_core.models.pytorch.nlp import RNNLM
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker, AverageMeter
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.distributed import global_average
-from mlbench_core.evaluation.goals import task3_time_to_preplexity_light_goal, task3_time_to_preplexity_goal
-
-import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
-from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
-import torch
-import torchtext
 
 LOG_EVERY_N_BATCHES = 25
 logger = logging.getLogger('mlbench')
@@ -278,6 +277,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
 
         if tracker.goal_reached:
             print("Goal Reached!")
+            time.sleep(10)
             return
         # train_round(train_loader, model, optimizer, loss_function, metrics,
         #             scheduler, 'fp32', schedule_per='epoch',
