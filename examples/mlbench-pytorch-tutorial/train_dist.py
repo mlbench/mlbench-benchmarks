@@ -14,7 +14,7 @@ from random import Random
 from torchvision import datasets, transforms
 
 from mlbench_core.utils import Tracker
-from mlbench_core.evaluation.goals import task1_time_to_accuracy_goal
+from mlbench_core.evaluation.goals import time_to_accuracy_goal
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.controlflow.pytorch import validation_round
 
@@ -141,7 +141,7 @@ def run(rank, size, run_id):
     ]
     loss_func = nn.NLLLoss()
 
-    goal = task1_time_to_accuracy_goal
+    goal = time_to_accuracy_goal(80)
 
     tracker = Tracker(metrics, run_id, rank, goal=goal)
 
