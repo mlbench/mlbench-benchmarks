@@ -19,7 +19,8 @@ from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
     CheckpointsEvaluationControlFlow
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
-from mlbench_core.evaluation.goals import time_to_accuracy_goal
+from mlbench_core.evaluation.goals import task1_time_to_accuracy_goal, \
+    task1_time_to_accuracy_light_goal
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.lr_scheduler.pytorch.lr import \
     MultistepLearningRatesWithWarmup
@@ -111,9 +112,9 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
 
     if not validation_only:
         if light_target:
-            goal = time_to_accuracy_goal(70)
+            goal = task1_time_to_accuracy_light_goal()
         else:
-            goal = time_to_accuracy_goal(80)
+            goal = task1_time_to_accuracy_goal()
 
         tracker = Tracker(metrics, run_id, rank, goal=goal)
 
