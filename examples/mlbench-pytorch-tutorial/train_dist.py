@@ -141,7 +141,7 @@ def run(rank, size, run_id):
     ]
     loss_func = nn.NLLLoss()
 
-    goal = task1_time_to_accuracy_goal
+    goal = task1_time_to_accuracy_goal()
 
     tracker = Tracker(metrics, run_id, rank, goal=goal)
 

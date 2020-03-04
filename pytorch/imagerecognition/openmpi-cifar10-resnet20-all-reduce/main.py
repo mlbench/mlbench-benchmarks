@@ -1,6 +1,8 @@
 """Training ResNet for CIFAR-10 dataset.
 
-This implements the 1a image recognition benchmark task, see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-image-classification-resnet-cifar-10
+This implements the 1a image recognition benchmark task,
+see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-image
+-classification-resnet-cifar-10
 for more details.
 
 .. code-block:: bash
@@ -9,11 +11,16 @@ for more details.
 import argparse
 import json
 import os
+import time
 
+import torch.distributed as dist
 from mlbench_core.controlflow.pytorch import train_round, validation_round
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsEvaluationControlFlow
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
+    CheckpointsEvaluationControlFlow
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
+from mlbench_core.evaluation.goals import task1_time_to_accuracy_light_goal, \
+    task1_time_to_accuracy_goal
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
@@ -21,9 +28,6 @@ from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer
-from mlbench_core.evaluation.goals import task1_time_to_accuracy_light_goal, task1_time_to_accuracy_goal
-
-import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.data import DataLoader
@@ -102,9 +106,9 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
 
     if not validation_only:
         if light_target:
-            goal = task1_time_to_accuracy_light_goal
+            goal = task1_time_to_accuracy_light_goal()
         else:
-            goal = task1_time_to_accuracy_goal
+            goal = task1_time_to_accuracy_goal()
 
         tracker = Tracker(metrics, run_id, rank, goal=goal)
 
@@ -119,7 +123,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
                         max_batch_per_epoch=max_batch_per_epoch,
                         tracker=tracker)
 
-            is_best = validation_round(val_loader, model,  loss_function,
+            is_best = validation_round(val_loader, model, loss_function,
                                        metrics, run_id, rank, 'fp32',
                                        transform_target_type=None,
                                        use_cuda=use_cuda,
@@ -134,6 +138,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
 
             if tracker.goal_reached:
                 print("Goal Reached!")
+                time.sleep(10)
                 return
 
     else:
