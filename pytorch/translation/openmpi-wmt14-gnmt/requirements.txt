@@ -1,0 +1,3 @@
+mlbench-core==2.3.0.dev49
+spacy==2.2.3
+sacrebleu==1.4.3
