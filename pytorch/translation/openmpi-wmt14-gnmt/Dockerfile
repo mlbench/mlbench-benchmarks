@@ -4,10 +4,11 @@ FROM mlbench/mlbench-pytorch-base:pytorch-v1.0.0
 # RUN apt-get update && apt-get install -y vim net-tools
 
 # The reference implementation and user defined implementations are placed here.
+RUN git clone https://github.com/NVIDIA/apex && cd apex && pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./ && cd ..
+
 ADD ./requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 RUN /conda/bin/python -m spacy download en && /conda/bin/python -m spacy download de
-RUN git clone https://github.com/NVIDIA/apex && cd apex && pip install -v --no-cache-dir ./ && cd ..
 
 RUN mkdir /codes
 ADD ./main.py /codes/main.py
