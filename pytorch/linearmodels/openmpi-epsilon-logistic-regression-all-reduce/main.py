@@ -155,7 +155,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
             json.dump(val_stats, f)
 
 
-def main(run_id, dataset_dir, ckpt_run_dir, output_dir, rank, world_size, backend, hosts, validation_only=False,
+def main(run_id, dataset_dir, ckpt_run_dir, output_dir, rank, backend, hosts, validation_only=False,
          gpu=False, light_target=False):
     r"""Main logic."""
     if backend == "mpi":
@@ -176,7 +176,7 @@ def main(run_id, dataset_dir, ckpt_run_dir, output_dir, rank, world_size, backen
         os.environ['MASTER_PORT'] = '29500'
         dist.init_process_group(
             backend="gloo",
-            world_size=world_size,
+            world_size=len(hosts),
             rank=rank,
         )
         train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
@@ -198,10 +198,8 @@ if __name__ == '__main__':
                         help='Train with GPU')
     parser.add_argument('--light', action='store_true', default=False,
                         help='Train to light target metric goal')
-    parser.add_argument('--rank', type=str, default='1',
+    parser.add_argument('--rank', type=int, default='1',
                         help='The rank of the process')
-    parser.add_argument('--world_size', type=str, default='2',
-                        help='The world size')
     parser.add_argument('--backend', type=str, default='mpi',
                         help='PyTorch distributed backend')
     parser.add_argument('--hosts', type=str, help='The list of hosts')
@@ -216,5 +214,5 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True)
 
     main(args.run_id, dataset_dir, ckpt_run_dir,
-         output_dir, args.rank, args.world_size, args.backend, args.hosts,
+         output_dir, args.rank, args.backend, args.hosts,
          validation_only=args.validation_only, gpu=args.gpu, light_target=args.light)
