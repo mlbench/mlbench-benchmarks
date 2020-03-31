@@ -1,12 +1,7 @@
-"""Training ResNet for CIFAR-10 dataset.
+"""Training GNMT for WMT14 Dataset
 
-This implements the 1a image recognition benchmark task,
-see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-image
--classification-resnet-cifar-10
-for more details.
-
-.. code-block:: bash
-    mpirun -n 2 --oversubscribe python resnet_cifar10_mpi.py --run_id 1
+This implements the machine translation benchmark tasks,
+# TODO add link to docs
 """
 import argparse
 import json
@@ -17,45 +12,98 @@ import time
 import torch
 import torch.distributed as dist
 import torchtext
+from apex import amp
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
     CheckpointsEvaluationControlFlow,
 )
 from mlbench_core.controlflow.pytorch.gnmt import GNMTTrainer
 from mlbench_core.dataset.translation.pytorch import WMT14Dataset, config
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
+from mlbench_core.evaluation.pytorch.criterion import LabelSmoothing
 from mlbench_core.evaluation.pytorch.inference import Translator
 from mlbench_core.evaluation.pytorch.metrics import BLEUScore
-from mlbench_core.evaluation.pytorch.utils import build_criterion
+from mlbench_core.lr_scheduler.pytorch.lr import ExponentialWarmupMultiStepLR
 from mlbench_core.models.pytorch.gnmt import GNMT
-from mlbench_core.optim.pytorch.utils import build_fp_optimizer
+from mlbench_core.optim.pytorch import FP32Optimizer, AMPOptimizer, Adam
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq, Checkpointer
-
+from torch import nn
+from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
 logger = logging.getLogger("mlbench")
 
 
+def set_iter_size(global_bs, train_bs):
+    """
+    Automatically set train_iter_size based on train_global_batch_size,
+    world_size and per-worker train_batch_size
+
+    """
+    world_size = dist.get_world_size()
+    assert global_bs % (train_bs * world_size) == 0
+    train_iter_size = global_bs // (train_bs * world_size)
+    logger.info(f'Global batch size was set, '
+                f'Setting train_iter_size to {train_iter_size}')
+    return train_iter_size
+
+
+def build_optimizer(
+        model, math, optimizer, grad_clip, loss_scaling
+):
+    if math == "fp32":
+        fp_optimizer = FP32Optimizer(
+            model=model, optimizer=optimizer, grad_clip=grad_clip
+        )
+
+    elif math == "fp16":
+        model, optimizer = amp.initialize(
+            model,
+            optimizer,
+            cast_model_outputs=torch.float16,
+            keep_batchnorm_fp32=False,
+            opt_level="O2",
+        )
+
+        fp_optimizer = AMPOptimizer(
+            model,
+            optimizer,
+            grad_clip=grad_clip,
+            loss_scale=loss_scaling["init_scale"],
+            dls_upscale_interval=loss_scaling["upscale_interval"],
+        )
+    else:
+        return NotImplementedError()
+
+    return fp_optimizer, model
+
+
+def build_criterion(padding_idx, smoothing):
+    if smoothing == 0.0:
+        criterion = nn.CrossEntropyLoss(ignore_index=padding_idx, size_average=False)
+    else:
+        criterion = LabelSmoothing(padding_idx, smoothing)
+
+    return criterion
+
+
 def train_loop(
-    run_id,
-    dataset_dir,
-    ckpt_run_dir,
-    output_dir,
-    validation_only=False,
-    use_cuda=False,
-    light_target=False,
+        run_id,
+        dataset_dir,
+        ckpt_run_dir,
+        output_dir,
+        validation_only=False,
+        use_cuda=False,
+        light_target=False,
 ):
     """Train loop"""
-    num_parallel_workers = 2
-    max_batch_per_epoch = None
-    train_epochs = 10
+    train_epochs = 6
 
     # Dataset attributes
     train_min_len, train_max_len = 0, 50
-    val_min_len, val_max_len = 0, 125
-    math_mode = "fp16"  # One of `fp16`, `fp32` or `manual_fp16`
+    val_min_len, val_max_len = 0, 150
+    math_mode = "fp16"  # One of `fp16`, `fp32`
     batch_first = False
     include_lengths = True
-    max_size = None
     lang = {"src": "en", "trg": "de"}
 
     # Model attributes
@@ -67,10 +115,12 @@ def train_loop(
 
     # Training
     train_batch_size = 128
-    train_iter_size = 1
+    train_global_batch_size = 1024 if dist.get_world_size() <= 8 else 2048
+    train_iter_size = set_iter_size(train_global_batch_size, train_batch_size)
     val_batch_size = 64
-    grad_clip = 5.0
+    validate_every = 2000
 
+    assert (validate_every % train_iter_size) == 0
     # Translator
     beam_size = 5
     len_norm_factor = 0.6
@@ -79,7 +129,8 @@ def train_loop(
     max_seq_len = 150
 
     # Optimizer
-    opt_config = {"optimizer": "Adam", "lr": 2.00e-3}
+    lr = 2.00e-3
+    grad_clip = 5.0
 
     # Loss
     loss_scaling = {"init_scale": 8192, "upscale_interval": 128}
@@ -121,6 +172,7 @@ def train_loop(
         min_len=val_min_len,
         max_len=val_max_len,
     )
+    tokenizer = train_set.fields["trg"]
 
     # Build model
     model = GNMT(
@@ -135,27 +187,11 @@ def train_loop(
     # Build loss function
     loss_function = build_criterion(config.PAD, smoothing)
 
-    if use_cuda:
-        model = model.cuda()
-        loss_function = loss_function.cuda()
-
-    # Translator
-    translator = Translator(
-        model=model,
-        trg_tokenizer=train_set.fields["trg"],
-        beam_size=beam_size,
-        len_norm_factor=len_norm_factor,
-        len_norm_const=len_norm_const,
-        cov_penalty_factor=cov_penalty_factor,
-        max_seq_len=max_seq_len,
-    )
-
-    # Metrics like Top 1/5 Accuracy
+    # Bilingual Evaluation Understudy Score
     metrics = [BLEUScore()]
 
     # Partition data
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
-    val_set = partition_dataset_by_rank(val_set, rank, world_size)
 
     # Get data loaders
     train_loader = torchtext.data.BucketIterator(
@@ -168,7 +204,7 @@ def train_loop(
     )
 
     val_loader = torchtext.data.BucketIterator(
-        dataset=val_set.data,
+        dataset=val_set,
         batch_size=val_batch_size,
         shuffle=False,
         sort_within_batch=True,
@@ -178,14 +214,38 @@ def train_loop(
 
     # Build optimizer & scheduler
     total_train_iters = (len(train_loader) // train_iter_size) * train_epochs
-    fp_optimizer, scheduler, model = build_fp_optimizer(
+
+    logger.info("Number of batches per epoch {}".format(len(train_loader)))
+    logger.info("Train iterations per epoch {}".format(total_train_iters / train_epochs))
+
+    optimizer = Adam(params=model.parameters(), lr=lr)
+
+    # Create a learning rate scheduler for an optimizer
+    scheduler = ExponentialWarmupMultiStepLR(optimizer,
+                                             total_train_iters,
+                                             **scheduler_config)
+
+    if use_cuda:
+        model = model.cuda()
+        loss_function = loss_function.cuda()
+
+    fp_optimizer, model = build_optimizer(
         model=model,
         math=math_mode,
-        opt_config=opt_config,
+        optimizer=optimizer,
         grad_clip=grad_clip,
         loss_scaling=loss_scaling,
-        scheduler_config=scheduler_config,
-        iters=total_train_iters,
+    )
+
+    # Translator
+    translator = Translator(
+        model=model,
+        trg_tokenizer=tokenizer,
+        beam_size=beam_size,
+        len_norm_factor=len_norm_factor,
+        len_norm_const=len_norm_const,
+        cov_penalty_factor=cov_penalty_factor,
+        max_seq_len=max_seq_len,
     )
 
     # Trainer
@@ -207,15 +267,19 @@ def train_loop(
 
     if not validation_only:
 
-        # TODO Add goal
-        tracker = Tracker(metrics, run_id, rank, goal=None)
+        if light_target:
+            goal = task4_time_to_bleu_goal(20)
+        else:
+            goal = task4_time_to_bleu_goal(24)
+
+        tracker = Tracker(metrics, run_id, rank, goal=goal)
 
         trainer.set_tracker(tracker)
         dist.barrier()
         tracker.start()
 
         for epoch in range(0, train_epochs):
-            trainer.train_round(train_loader)
+            trainer.train_round(train_loader, val_loader=val_loader, bleu_score=True, validate_every=validate_every)
 
             is_best = trainer.validation_round(val_loader)
             checkpointer.save(
@@ -258,25 +322,24 @@ def train_loop(
 
 
 def main(
-    run_id,
-    dataset_dir,
-    ckpt_run_dir,
-    output_dir,
-    validation_only=False,
-    gpu=False,
-    light_target=False,
+        run_id,
+        dataset_dir,
+        ckpt_run_dir,
+        output_dir,
+        validation_only=False,
+        gpu=False,
+        light_target=False,
 ):
     r"""Main logic."""
-
     with initialize_backends(
-        comm_backend="mpi",
-        logging_level="INFO",
-        logging_file=os.path.join(output_dir, "mlbench.log"),
-        use_cuda=gpu,
-        seed=42,
-        cudnn_deterministic=False,
-        ckpt_run_dir=ckpt_run_dir,
-        delete_existing_ckpts=not validation_only,
+            comm_backend="mpi",
+            logging_level="INFO",
+            logging_file=os.path.join(output_dir, "mlbench.log"),
+            use_cuda=gpu,
+            seed=42,
+            cudnn_deterministic=False,
+            ckpt_run_dir=ckpt_run_dir,
+            delete_existing_ckpts=not validation_only,
     ):
         train_loop(
             run_id,
@@ -325,9 +388,10 @@ if __name__ == "__main__":
         default=False,
         help="Train to light target metric goal",
     )
+
     args = parser.parse_args()
 
-    uid = "scaling"
+    uid = "allreduce"
     dataset_dir = os.path.join(args.root_dataset, "torch", "wmt14")
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)
