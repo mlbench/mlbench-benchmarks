@@ -40,6 +40,16 @@ jobs:
       install: true
       script:
         - docker build -t pytorch-openmpi-wikitext2-rnn-lm:travis-ci-test ./pytorch/nlp/openmpi-wikitext2-rnn-lm
+        -
+    - stage: build pytorch-openmpi-wmt14-gnmt-all-reduce
+      language: bash
+      sudo: required
+
+      services:
+        - docker
+      install: true
+      script:
+        - docker build -t pytorch-openmpi-wmt14-gnmt-all-reduce:travis-ci-test ./pytorch/translation/openmpi-wmt14-gnmt-all-reduce
 
     - stage: build tensorflow-base
       language: bash
