@@ -30,6 +30,8 @@ from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq, Checkpointer
 from torch import nn
 from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
+import horovod.torch as hvd
+
 logger = logging.getLogger("mlbench")
 
 
@@ -71,6 +73,8 @@ def build_optimizer(
             loss_scale=loss_scaling["init_scale"],
             dls_upscale_interval=loss_scaling["upscale_interval"],
         )
+        hvd.init()
+        print(os.environ)
     else:
         return NotImplementedError()
 
