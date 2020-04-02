@@ -1,7 +1,7 @@
 PyTorch WMT14 GNMT Open-MPI All-Reduce
 """""""""""""""""""""""""""""""""""""""""""
 
-GNMT implementation
+GNMT implementation (adapted from https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/Translation/GNMT)
 
 :Framework: PyTorch
 :Communication Backend: Open MPI (PyTorch `torch.distributed`)
