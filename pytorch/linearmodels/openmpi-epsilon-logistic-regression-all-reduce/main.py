@@ -153,32 +153,24 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
             json.dump(val_stats, f)
 
 
-def main(run_id, dataset_dir, ckpt_run_dir, output_dir, rank, world_size, backend, hosts, validation_only=False,
+def main(run_id, dataset_dir, ckpt_run_dir, output_dir, rank, backend, hosts, validation_only=False,
          gpu=False, light_target=False):
     r"""Main logic."""
-    if backend == "mpi":
-        with initialize_backends(
-                comm_backend='mpi',
-                logging_level='INFO',
-                logging_file=os.path.join(output_dir, 'mlbench.log'),
-                use_cuda=gpu,
-                seed=42,
-                cudnn_deterministic=False,
-                ckpt_run_dir=ckpt_run_dir,
-                delete_existing_ckpts=not validation_only):
-            train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
-                       validation_only, use_cuda=gpu, light_target=light_target)
-    elif backend == "nccl":
-        hosts = hosts.split(',')
-        os.environ['MASTER_ADDR'] = hosts[0]  # first worker is the master worker
-        os.environ['MASTER_PORT'] = '29500'
-        dist.init_process_group(
-            backend="nccl",
-            world_size=world_size,
+
+    with initialize_backends(
+            comm_backend=backend,
+            hosts=hosts,
             rank=rank,
-        )
+            logging_level='INFO',
+            logging_file=os.path.join(output_dir, 'mlbench.log'),
+            use_cuda=gpu,
+            seed=42,
+            cudnn_deterministic=False,
+            ckpt_run_dir=ckpt_run_dir,
+            delete_existing_ckpts=not validation_only):
         train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
-                   validation_only, use_cuda=gpu, light_target=light_target)
+                    validation_only, use_cuda=gpu, light_target=light_target)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process run parameters')
@@ -196,13 +188,12 @@ if __name__ == '__main__':
                         help='Train with GPU')
     parser.add_argument('--light', action='store_true', default=False,
                         help='Train to light target metric goal')
-    parser.add_argument('--rank', type=str, default='1',
+    parser.add_argument('--rank', type=int, default=1,
                         help='The rank of the process')
-    parser.add_argument('--world_size', type=str, default='2',
-                        help='The world size')
     parser.add_argument('--backend', type=str, default='mpi',
                         help='PyTorch distributed backend')
     parser.add_argument('--hosts', type=str, help='The list of hosts')
+
     args = parser.parse_args()
 
     uid = 'benchmark'
@@ -213,6 +204,5 @@ if __name__ == '__main__':
     os.makedirs(ckpt_run_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
-    main(args.run_id, dataset_dir, ckpt_run_dir,
-         output_dir, args.rank, args.world_size, args.backend, args.hosts,
+    main(args.run_id, dataset_dir, ckpt_run_dir, output_dir, args.rank, args.backend, args.hosts,
          validation_only=args.validation_only, gpu=args.gpu, light_target=args.light)

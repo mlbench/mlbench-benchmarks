@@ -1,2 +1,2 @@
-mlbench-core==2.3.0.dev45
+mlbench-core==2.3.1.dev58
 tensorpack
