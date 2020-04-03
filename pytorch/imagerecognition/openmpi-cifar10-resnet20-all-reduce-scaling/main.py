@@ -169,7 +169,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
             json.dump(val_stats, f)
 
 
-def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
+def main(run_id, dataset_dir, ckpt_run_dir, output_dir, rank, hosts, backend, validation_only=False,
          gpu=False, light_target=False):
     r"""Main logic."""
 
@@ -202,6 +202,11 @@ if __name__ == '__main__':
                         help='Train with GPU')
     parser.add_argument('--light', action='store_true', default=False,
                         help='Train to light target metric goal')
+    parser.add_argument('--rank', type=int, default=1,
+                        help='The rank of the process')
+    parser.add_argument('--backend', type=str, default='mpi',
+                        help='PyTorch distributed backend')
+    parser.add_argument('--hosts', type=str, help='The list of hosts')
     args = parser.parse_args()
 
     uid = 'scaling'
@@ -213,5 +218,5 @@ if __name__ == '__main__':
     os.makedirs(output_dir, exist_ok=True)
 
     main(args.run_id, dataset_dir, ckpt_run_dir,
-         output_dir, validation_only=args.validation_only, gpu=args.gpu,
+         output_dir, args.rank, args.hosts, args.backend, validation_only=args.validation_only, gpu=args.gpu,
          light_target=args.light)
