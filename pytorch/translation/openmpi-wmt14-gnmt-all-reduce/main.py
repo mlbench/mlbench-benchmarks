@@ -24,13 +24,12 @@ from mlbench_core.evaluation.pytorch.inference import Translator
 from mlbench_core.evaluation.pytorch.metrics import BLEUScore
 from mlbench_core.lr_scheduler.pytorch.lr import ExponentialWarmupMultiStepLR
 from mlbench_core.models.pytorch.gnmt import GNMT
-from mlbench_core.optim.pytorch import FP32Optimizer, AMPOptimizer, Adam
+from mlbench_core.optim.pytorch import FP32Optimizer, AMPOptimizer, Adam, CentralizedAdam
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq, Checkpointer
 from torch import nn
 from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
-import horovod.torch as hvd
 
 logger = logging.getLogger("mlbench")
 
@@ -73,8 +72,6 @@ def build_optimizer(
             loss_scale=loss_scaling["init_scale"],
             dls_upscale_interval=loss_scaling["upscale_interval"],
         )
-        hvd.init()
-        print(os.environ)
     else:
         return NotImplementedError()
 
@@ -222,8 +219,11 @@ def train_loop(
     logger.info("Number of batches per epoch {}".format(len(train_loader)))
     logger.info("Train iterations per epoch {}".format(total_train_iters / train_epochs))
 
-    optimizer = Adam(params=model.parameters(), lr=lr)
+    # optimizer = Adam(params=model.parameters(), lr=lr)
 
+    optimizer = CentralizedAdam(world_size=world_size,
+                                model=model,
+                                lr=lr)
     # Create a learning rate scheduler for an optimizer
     scheduler = ExponentialWarmupMultiStepLR(optimizer,
                                              total_train_iters,
@@ -336,7 +336,7 @@ def main(
 ):
     r"""Main logic."""
     with initialize_backends(
-            comm_backend="mpi",
+            comm_backend="nccl",
             logging_level="INFO",
             logging_file=os.path.join(output_dir, "mlbench.log"),
             use_cuda=gpu,
@@ -392,10 +392,24 @@ if __name__ == "__main__":
         default=False,
         help="Train to light target metric goal",
     )
-
+    parser.add_argument(
+        "--hosts",
+        type=str
+    )
+    parser.add_argument(
+        "--rank",
+        type=int,
+        default=0
+    )
     args = parser.parse_args()
 
     uid = "allreduce"
+    hosts = args.hosts.split(',')
+    os.environ["MASTER_ADDR"] = hosts[0]
+    os.environ['MASTER_PORT'] = '29500'
+    os.environ["RANK"] = str(args.rank)
+    os.environ["WORLD_SIZE"] = str(len(hosts))
+
     dataset_dir = os.path.join(args.root_dataset, "torch", "wmt14")
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)
