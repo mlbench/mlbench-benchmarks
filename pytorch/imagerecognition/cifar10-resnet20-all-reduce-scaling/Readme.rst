@@ -10,4 +10,4 @@ Resnet 20 implementation with scaling Learning Rate
 :Dataset: CIFAR-10
 :GPU: Yes
 :Seed: 42
-:Image Location: /pytorch/imagerecognition/openmpi-cifar10-resnet20-all-reduce/
+:Image Location: mlbench/pytorch-cifar10-resnet-scaling:latest
