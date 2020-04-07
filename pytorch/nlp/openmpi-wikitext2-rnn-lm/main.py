@@ -7,12 +7,13 @@ for more details.
     mpirun -n 2 --oversubscribe python resnet_cifar10_mpi.py --run_id 1
 """
 import argparse
-import json
+import time
 import os
 import logging
 
 from mlbench_core.controlflow.pytorch import train_round, validation_round
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
+from mlbench_core.dataset.nlp.pytorch import BPTTWikiText2
 from mlbench_core.evaluation.pytorch.metrics import Perplexity
 from mlbench_core.models.pytorch.nlp import RNNLM
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
@@ -22,15 +23,15 @@ from mlbench_core.evaluation.goals import (
     task3_time_to_preplexity_light_goal,
     task3_time_to_preplexity_goal,
 )
+from mlbench_core.lr_scheduler.pytorch.lr import \
+    MultistepLearningRatesWithWarmup
 
 import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.nn.utils import clip_grad_norm_
-from torch.nn.parallel import DistributedDataParallel
-import torch
-import torchtext
 from torchtext.experimental.datasets import WikiText2
 from torchtext.data.utils import get_tokenizer
+from torch.utils.data import DataLoader
 
 LOG_EVERY_N_BATCHES = 25
 logger = logging.getLogger("mlbench")
@@ -54,38 +55,38 @@ def train_loop(
     rnn_n_layers = 2
     rnn_tie_weights = True
     rnn_clip = 0.25
-    rnn_bptt_len = 35
     drop_rate = 0.0
     rnn_weight_norm = False
-    dtype = "fp32"
+    bptt_len = 35
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
     tokenizer = get_tokenizer("spacy")
-    train_set, _, val_set = WikiText2(tokenizer=tokenizer)
+    train_set = BPTTWikiText2(bptt_len, train=True, tokenizer=tokenizer, root=dataset_dir)
     vocab = train_set.get_vocab()
+    print(next(iter(train_set)))
 
-    (val_set,) = WikiText2(tokenizer=tokenizer, vocab=vocab, data_select="valid")
+    val_set = BPTTWikiText2(bptt_len, train=False, tokenizer=tokenizer, root=dataset_dir)
 
-    train_set = partition_dataset_by_rank(train_set, rank, world_size)
-    val_set = partition_dataset_by_rank(val_set, rank, world_size)
+    train_set = partition_dataset_by_rank(train_set, rank, world_size, shuffle=False)
+    val_set = partition_dataset_by_rank(val_set, rank, world_size, shuffle=False)
 
-    train_loader, _ = torchtext.data.BPTTIterator.splits(
-        (train_set, val_set),
+    train_loader = DataLoader(
+        train_set,
         batch_size=batch_size,
-        bptt_len=rnn_bptt_len,
-        device="cuda:0" if use_cuda else None,
-        repeat=False,
-        shuffle=True,
-    )
-    _, val_loader = torchtext.data.BPTTIterator.splits(
-        (train_set, val_set),
-        batch_size=batch_size,
-        bptt_len=rnn_bptt_len,
-        device="cuda:0" if use_cuda else None,
         shuffle=False,
-    )
+        num_workers=num_parallel_workers,
+        pin_memory=use_cuda,
+        drop_last=False)
+
+    val_loader = DataLoader(
+        val_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_parallel_workers,
+        pin_memory=use_cuda,
+        drop_last=False)
 
     n_tokens, emb_size = len(vocab), rnn_n_hidden
 
@@ -97,6 +98,7 @@ def train_loop(
         tie_weights=rnn_tie_weights,
         dropout=drop_rate,
         weight_norm=rnn_weight_norm,
+        batch_first=True
     )
 
     optimizer = CentralizedSGD(
@@ -149,7 +151,7 @@ def train_loop(
             loss_function,
             metrics,
             scheduler,
-            "fp32",
+            "int64",
             schedule_per="epoch",
             transform_target_type=None,
             use_cuda=use_cuda,
@@ -167,7 +169,7 @@ def train_loop(
             metrics,
             run_id,
             rank,
-            "fp32",
+            "int64",
             transform_target_type=None,
             use_cuda=use_cuda,
             max_batch_per_epoch=max_batch_per_epoch,
@@ -259,7 +261,6 @@ if __name__ == "__main__":
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)
     os.makedirs(dataset_dir, exist_ok=True)
-    os.makedirs(ckpt_run_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
     main(
