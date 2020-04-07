@@ -206,8 +206,6 @@ if __name__ == '__main__':
     parser.add_argument('--hosts', type=str, help='The list of hosts')
     args = parser.parse_args()
 
-    print(args)
-
     uid = 'benchmark'
     dataset_dir = os.path.join(args.root_dataset, 'torch', 'cifar10')
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
