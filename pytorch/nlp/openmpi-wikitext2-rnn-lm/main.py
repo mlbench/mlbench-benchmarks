@@ -29,7 +29,6 @@ from mlbench_core.lr_scheduler.pytorch.lr import \
 import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.nn.utils import clip_grad_norm_
-from torchtext.experimental.datasets import WikiText2
 from torchtext.data.utils import get_tokenizer
 from torch.utils.data import DataLoader
 
@@ -78,7 +77,7 @@ def train_loop(
         shuffle=False,
         num_workers=num_parallel_workers,
         pin_memory=use_cuda,
-        drop_last=False)
+        drop_last=True)
 
     val_loader = DataLoader(
         val_set,
@@ -86,7 +85,7 @@ def train_loop(
         shuffle=False,
         num_workers=num_parallel_workers,
         pin_memory=use_cuda,
-        drop_last=False)
+        drop_last=True)
 
     n_tokens, emb_size = len(vocab), rnn_n_hidden
 
