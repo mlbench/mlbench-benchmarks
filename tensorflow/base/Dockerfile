@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends --allow-downgra
      rm -rf /var/lib/apt/lists/*
 
 # -------------------- Conda environment --------------------
-RUN curl -o ~/miniconda.sh -O  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  && \
+RUN curl -o ~/miniconda.sh -LO  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  && \
      sh ~/miniconda.sh -b -p /conda && rm ~/miniconda.sh
 ENV PATH /conda/bin:$PATH
 ENV LD_LIBRARY_PATH /conda/lib:$LD_LIBRARY_PATH
