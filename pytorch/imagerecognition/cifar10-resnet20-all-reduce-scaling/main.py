@@ -206,7 +206,9 @@ def main(
     r"""Main logic."""
 
     with initialize_backends(
-        comm_backend="mpi",
+        comm_backend=backend,
+        hosts=hosts,
+        rank=rank,
         logging_level="INFO",
         logging_file=os.path.join(output_dir, "mlbench.log"),
         use_cuda=gpu,
