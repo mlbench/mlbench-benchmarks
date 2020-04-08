@@ -7,13 +7,13 @@ ENV CUDNN_VERSION 7.5.0.56
 ENV CUDA_VERSION 10.1
 LABEL com.nvidia.cudnn.version="${CUDNN_VERSION}"
 
-# -------------------- CUDA DEPENDENCIES --------------------
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
-            libcudnn7=$CUDNN_VERSION-1+cuda$CUDA_VERSION \
-            libcudnn7-dev=$CUDNN_VERSION-1+cuda$CUDA_VERSION && \
+            libcudnn7=$CUDNN_VERSION-1+cuda9.0 \
+            libcudnn7-dev=$CUDNN_VERSION-1+cuda9.0 && \
     apt-mark hold libcudnn7 && \
     rm -rf /var/lib/apt/lists/*
+
+# TODO: reduce size and complexity of image.
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -41,6 +41,13 @@ RUN mkdir -p /.sshd/user_keys/$SSH_USER && \
   chown -R $SSH_USER:$SSH_USER /.sshd/user_keys/$SSH_USER && chmod 700 /.sshd/user_keys/$SSH_USER
 VOLUME /ssh-key/$SSH_USER
 
+# -----–––---------------------- Cuda Dependency --------------------
+RUN echo "deb http://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu1604/x86_64 /" > /etc/apt/sources.list.d/nvidia-ml.list
+RUN apt-get update && apt-get install -y --no-install-recommends --allow-downgrades \
+        --allow-change-held-packages \
+         libnccl2=2.0.5-3+cuda9.0 \
+         libnccl-dev=2.0.5-3+cuda9.0 &&\
+     rm -rf /var/lib/apt/lists/*
 
 # -------------------- Conda environment --------------------
 RUN curl -o ~/miniconda.sh -LO  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  && \
@@ -100,7 +107,8 @@ RUN git clone --recursive https://github.com/pytorch/pytorch && \
     rm -rf /pytorch
 
 
-RUN git clone https://github.com/pytorch/vision.git && cd vision && git checkout tags/v0.5.0 &&  pip install -v .
+RUN git clone https://github.com/pytorch/vision.git && cd vision && pip install -v .
+
 # RUN pip install -U git+https://github.com/ppwwyyxx/tensorpack.git
 
 # RUN conda install -y -c anaconda msgpack
