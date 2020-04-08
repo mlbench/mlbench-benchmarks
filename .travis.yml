@@ -1,7 +1,7 @@
 # Config file for automatic testing at travis-ci.org
 jobs:
   include:
-    - stage: build pytorch-openmpi-cifar10-resnet20-all-reduce
+    - stage: build pytorch-cifar10-resnet20-all-reduce
       language: bash
       sudo: required
 
@@ -9,9 +9,9 @@ jobs:
         - docker
       install: true
       script:
-        - docker build -t pytorch-openmpi-cifar10-resnet20-all-reduce:travis-ci-test ./pytorch/imagerecognition/openmpi-cifar10-resnet20-all-reduce
+        - docker build -t pytorch-cifar10-resnet20-all-reduce:travis-ci-test ./pytorch/imagerecognition/cifar10-resnet20-all-reduce
 
-    - stage: build pytorch-openmpi-cifar10-resnet20-all-reduce-scaling
+    - stage: build pytorch-cifar10-resnet20-all-reduce-scaling
       language: bash
       sudo: required
 
@@ -19,7 +19,17 @@ jobs:
         - docker
       install: true
       script:
-        - docker build -t pytorch-openmpi-cifar10-resnet20-all-reduce-scaling:travis-ci-test ./pytorch/imagerecognition/openmpi-cifar10-resnet20-all-reduce-scaling
+        - docker build -t pytorch-cifar10-resnet20-all-reduce-scaling:travis-ci-test ./pytorch/imagerecognition/cifar10-resnet20-all-reduce-scaling
+
+    - stage: build pytorch-epsilon-logistic-regression-all-reduce
+      language: bash
+      sudo: required
+
+      services:
+        - docker
+      install: true
+      script:
+        - docker build -t pytorch-epsilon-logistic-regression-all-reduce:travis-ci-test ./pytorch/linearmodels/epsilon-logistic-regression-all-reduce
 
     - stage: build pytorch-openmpi-wikitext2-rnn-lm
       language: bash
@@ -53,7 +63,9 @@ jobs:
 
 
 stages:
-  - build pytorch-openmpi-cifar10-resnet20-all-reduce
-  - build pytorch-openmpi-cifar10-resnet20-all-reduce-scaling
+  - build pytorch-cifar10-resnet20-all-reduce
+  - build pytorch-cifar10-resnet20-all-reduce-scaling
+  - build pytorch-epsilon-logistic-regression-all-reduce
+  - build pytorch-openmpi-wikitext2-rnn-lm
   - build tensorflow-openmpi-cifar10-resnet20-all-reduce
   - build tensorflow-base

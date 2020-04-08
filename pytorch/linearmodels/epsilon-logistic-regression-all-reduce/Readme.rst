@@ -10,4 +10,4 @@ Logistic Regression implementation
 :Dataset: PASCAL Challenge 2008 epsilon
 :GPU: Yes
 :Seed: 42
-:Image Location: /pytorch/linearmodels/openmpi-epsilon-logistic-regression-all-reduce/
+:Image Location: mlbench/pytorch-epsilon-logistic-regression-all-reduce:latest

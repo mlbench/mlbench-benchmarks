@@ -8,4 +8,4 @@ PyTorch Cifar-10 ResNet-20 Open-MPI
 :Dataset: CIFAR-10
 :GPU: Yes
 :Seed: 42
-:Image Location: /pytorch/imagerecognition/openmpi-cifar10-resnet20-all-reduce/
+:Image Location: mlbench/pytorch-cifar10-resnet:latest
