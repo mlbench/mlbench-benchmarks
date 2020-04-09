@@ -16,6 +16,7 @@ RUN git clone https://github.com/NVIDIA/apex && cd apex && \
 #    cd /
 
 # Horovod
+RUN HOROVOD_GPU_ALLREDUCE=NCCL HOROVOD_GPU_BROADCAST=NCCL pip install --no-cache-dir horovod
 
 ADD ./requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt

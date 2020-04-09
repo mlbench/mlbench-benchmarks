@@ -5,10 +5,10 @@ This implements the machine translation benchmark tasks,
 """
 import argparse
 import json
-import logging
 import os
 import time
 
+import horovod.torch as hvd
 import torch
 import torch.distributed as dist
 import torchtext
@@ -19,19 +19,17 @@ from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
 from mlbench_core.controlflow.pytorch.gnmt import GNMTTrainer
 from mlbench_core.dataset.translation.pytorch import WMT14Dataset, config
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
+from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
 from mlbench_core.evaluation.pytorch.criterion import LabelSmoothing
 from mlbench_core.evaluation.pytorch.inference import Translator
 from mlbench_core.evaluation.pytorch.metrics import BLEUScore
 from mlbench_core.lr_scheduler.pytorch.lr import ExponentialWarmupMultiStepLR
 from mlbench_core.models.pytorch.gnmt import GNMT
-from mlbench_core.optim.pytorch import FP32Optimizer, AMPOptimizer, Adam, CentralizedAdam
+from mlbench_core.optim.pytorch import FP32Optimizer, AMPOptimizer, CentralizedAdam
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq, Checkpointer
 from torch import nn
-from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
-
-logger = logging.getLogger("mlbench")
 
 
 def set_iter_size(global_bs, train_bs):
@@ -43,14 +41,13 @@ def set_iter_size(global_bs, train_bs):
     world_size = dist.get_world_size()
     assert global_bs % (train_bs * world_size) == 0
     train_iter_size = global_bs // (train_bs * world_size)
-    logger.info(f'Global batch size was set, '
-                f'Setting train_iter_size to {train_iter_size}')
+    print(
+        f"Global batch size was set, " f"Setting train_iter_size to {train_iter_size}"
+    )
     return train_iter_size
 
 
-def build_optimizer(
-        model, math, optimizer, grad_clip, loss_scaling
-):
+def build_optimizer(model, math, optimizer, grad_clip, loss_scaling):
     if math == "fp32":
         fp_optimizer = FP32Optimizer(
             model=model, optimizer=optimizer, grad_clip=grad_clip
@@ -88,18 +85,17 @@ def build_criterion(padding_idx, smoothing):
 
 
 def train_loop(
-        run_id,
-        dataset_dir,
-        ckpt_run_dir,
-        output_dir,
-        validation_only=False,
-        use_cuda=False,
-        light_target=False,
+    run_id,
+    dataset_dir,
+    ckpt_run_dir,
+    output_dir,
+    validation_only=False,
+    use_cuda=False,
+    light_target=False,
 ):
     """Train loop"""
     train_epochs = 6
 
-    # Dataset attributes
     train_min_len, train_max_len = 0, 50
     val_min_len, val_max_len = 0, 150
     math_mode = "fp16"  # One of `fp16`, `fp32`
@@ -119,7 +115,7 @@ def train_loop(
     train_global_batch_size = 1024 if dist.get_world_size() <= 8 else 2048
     train_iter_size = set_iter_size(train_global_batch_size, train_batch_size)
     val_batch_size = 64
-    validate_every = 2000
+    validate_every = 2048 / dist.get_world_size()
 
     assert (validate_every % train_iter_size) == 0
     # Translator
@@ -133,6 +129,9 @@ def train_loop(
     lr = 2.00e-3
     grad_clip = 5.0
 
+    use_horovod = math_mode == "fp16" and dist.get_backend() == dist.Backend.MPI
+    if use_horovod:
+        hvd.init()
     # Loss
     loss_scaling = {"init_scale": 8192, "upscale_interval": 128}
 
@@ -161,7 +160,6 @@ def train_loop(
         min_len=train_min_len,
         max_len=train_max_len,
     )
-
     val_set = WMT14Dataset(
         dataset_dir,
         batch_first=batch_first,
@@ -193,10 +191,11 @@ def train_loop(
 
     # Partition data
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
+    val_set = partition_dataset_by_rank(val_set, rank, world_size)
 
     # Get data loaders
     train_loader = torchtext.data.BucketIterator(
-        dataset=train_set.data,
+        dataset=train_set,
         batch_size=train_batch_size,
         shuffle=False,
         sort_within_batch=True,
@@ -216,18 +215,17 @@ def train_loop(
     # Build optimizer & scheduler
     total_train_iters = (len(train_loader) // train_iter_size) * train_epochs
 
-    logger.info("Number of batches per epoch {}".format(len(train_loader)))
-    logger.info("Train iterations per epoch {}".format(total_train_iters / train_epochs))
+    print("Number of batches per epoch {}".format(len(train_loader)))
+    print("Train iterations per epoch {}".format(total_train_iters / train_epochs))
 
-    # optimizer = Adam(params=model.parameters(), lr=lr)
+    optimizer = CentralizedAdam(
+        world_size=world_size, model=model, lr=lr, use_horovod=use_horovod
+    )
 
-    optimizer = CentralizedAdam(world_size=world_size,
-                                model=model,
-                                lr=lr)
     # Create a learning rate scheduler for an optimizer
-    scheduler = ExponentialWarmupMultiStepLR(optimizer,
-                                             total_train_iters,
-                                             **scheduler_config)
+    scheduler = ExponentialWarmupMultiStepLR(
+        optimizer, total_train_iters, **scheduler_config
+    )
 
     if use_cuda:
         model = model.cuda()
@@ -283,7 +281,12 @@ def train_loop(
         tracker.start()
 
         for epoch in range(0, train_epochs):
-            trainer.train_round(train_loader, val_loader=val_loader, bleu_score=True, validate_every=validate_every)
+            trainer.train_round(
+                train_loader,
+                val_loader=val_loader,
+                bleu_score=True,
+                validate_every=validate_every,
+            )
 
             is_best = trainer.validation_round(val_loader)
             checkpointer.save(
@@ -326,24 +329,29 @@ def train_loop(
 
 
 def main(
-        run_id,
-        dataset_dir,
-        ckpt_run_dir,
-        output_dir,
-        validation_only=False,
-        gpu=False,
-        light_target=False,
+    run_id,
+    dataset_dir,
+    ckpt_run_dir,
+    output_dir,
+    rank,
+    backend,
+    hosts,
+    validation_only=False,
+    gpu=False,
+    light_target=False,
 ):
     r"""Main logic."""
     with initialize_backends(
-            comm_backend="nccl",
-            logging_level="INFO",
-            logging_file=os.path.join(output_dir, "mlbench.log"),
-            use_cuda=gpu,
-            seed=42,
-            cudnn_deterministic=False,
-            ckpt_run_dir=ckpt_run_dir,
-            delete_existing_ckpts=not validation_only,
+        comm_backend=backend,
+        hosts=hosts,
+        rank=rank,
+        logging_level="INFO",
+        logging_file=os.path.join(output_dir, "mlbench.log"),
+        use_cuda=gpu,
+        seed=42,
+        cudnn_deterministic=False,
+        ckpt_run_dir=ckpt_run_dir,
+        delete_existing_ckpts=not validation_only,
     ):
         train_loop(
             run_id,
@@ -392,23 +400,15 @@ if __name__ == "__main__":
         default=False,
         help="Train to light target metric goal",
     )
+    parser.add_argument("--rank", type=int, default=1, help="The rank of the process")
     parser.add_argument(
-        "--hosts",
-        type=str
+        "--backend", type=str, default="mpi", help="PyTorch distributed backend"
     )
-    parser.add_argument(
-        "--rank",
-        type=int,
-        default=0
-    )
+    parser.add_argument("--hosts", type=str, help="The list of hosts")
+
     args = parser.parse_args()
 
     uid = "allreduce"
-    hosts = args.hosts.split(',')
-    os.environ["MASTER_ADDR"] = hosts[0]
-    os.environ['MASTER_PORT'] = '29500'
-    os.environ["RANK"] = str(args.rank)
-    os.environ["WORLD_SIZE"] = str(len(hosts))
 
     dataset_dir = os.path.join(args.root_dataset, "torch", "wmt14")
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
@@ -422,6 +422,9 @@ if __name__ == "__main__":
         dataset_dir,
         ckpt_run_dir,
         output_dir,
+        rank=args.rank,
+        backend=args.backend,
+        hosts=args.hosts,
         validation_only=args.validation_only,
         gpu=args.gpu,
         light_target=args.light,

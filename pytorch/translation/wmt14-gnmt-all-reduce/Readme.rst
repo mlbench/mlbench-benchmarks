@@ -10,4 +10,4 @@ GNMT implementation (adapted from https://github.com/NVIDIA/DeepLearningExamples
 :Dataset: WMT14
 :GPU: Yes
 :Seed: 42
-:Image Location: /pytorch/translation/openmpi-wmt14-gnmt-all-reduce/
+:Image Location: mlbench/pytorch-wmt14-gnmt-all-reduce:latest
