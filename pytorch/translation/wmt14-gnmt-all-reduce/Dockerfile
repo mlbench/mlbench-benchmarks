@@ -25,6 +25,7 @@ RUN /conda/bin/python -m spacy download en && /conda/bin/python -m spacy downloa
 RUN mkdir /codes
 ADD ./main.py /codes/main.py
 
+ENV NCCL_DEBUG INFO
 ENV PYTHONPATH /codes
 #ENV HOROVOD_CACHE_CAPACITY 2048
 #ENV MPICH_MAX_THREAD_SAFETY multiple

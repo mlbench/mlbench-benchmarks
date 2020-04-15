@@ -25,7 +25,7 @@ from mlbench_core.evaluation.pytorch.inference import Translator
 from mlbench_core.evaluation.pytorch.metrics import BLEUScore
 from mlbench_core.lr_scheduler.pytorch.lr import ExponentialWarmupMultiStepLR
 from mlbench_core.models.pytorch.gnmt import GNMT
-from mlbench_core.optim.pytorch import FP32Optimizer, AMPOptimizer, CentralizedAdam
+from mlbench_core.optim.pytorch import FP32Optimizer, AMPOptimizer, Adam, CentralizedAdam
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq, Checkpointer
@@ -47,7 +47,7 @@ def set_iter_size(global_bs, train_bs):
     return train_iter_size
 
 
-def build_optimizer(model, math, optimizer, grad_clip, loss_scaling):
+def build_optimizer(model, math, optimizer, grad_clip, loss_scaling, use_cuda, use_horovod, world_size):
     if math == "fp32":
         fp_optimizer = FP32Optimizer(
             model=model, optimizer=optimizer, grad_clip=grad_clip
@@ -68,6 +68,9 @@ def build_optimizer(model, math, optimizer, grad_clip, loss_scaling):
             grad_clip=grad_clip,
             loss_scale=loss_scaling["init_scale"],
             dls_upscale_interval=loss_scaling["upscale_interval"],
+            use_cuda=use_cuda,
+            use_horovod=use_horovod,
+            world_size=world_size
         )
     else:
         return NotImplementedError()
@@ -218,18 +221,23 @@ def train_loop(
     print("Number of batches per epoch {}".format(len(train_loader)))
     print("Train iterations per epoch {}".format(total_train_iters / train_epochs))
 
-    optimizer = CentralizedAdam(
-        world_size=world_size, model=model, lr=lr, use_horovod=use_horovod
-    )
+    if use_cuda:
+        model = model.cuda()
+        loss_function = loss_function.cuda()
+
+    if math_mode == "fp16":
+        optimizer = Adam(params=model.parameters(), lr=lr)
+    elif math_mode == "fp32":
+        optimizer = CentralizedAdam(
+            world_size=world_size, model=model, lr=lr, use_cuda=use_cuda,
+        )
+    else:
+        raise ValueError("Math mode {} not supported".format(math_mode))
 
     # Create a learning rate scheduler for an optimizer
     scheduler = ExponentialWarmupMultiStepLR(
         optimizer, total_train_iters, **scheduler_config
     )
-
-    if use_cuda:
-        model = model.cuda()
-        loss_function = loss_function.cuda()
 
     fp_optimizer, model = build_optimizer(
         model=model,
@@ -237,6 +245,9 @@ def train_loop(
         optimizer=optimizer,
         grad_clip=grad_clip,
         loss_scaling=loss_scaling,
+        use_horovod=use_horovod,
+        use_cuda=use_cuda,
+        world_size=world_size
     )
 
     # Translator
