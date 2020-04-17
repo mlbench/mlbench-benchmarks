@@ -15,12 +15,12 @@ import torch
 import torch.distributed as dist
 import torchtext
 from mlbench_core.dataset.nlp.pytorch import Wikitext2
-from mlbench_core.evaluation.goals import \
-    task3_time_to_preplexity_light_goal, \
-    task3_time_to_preplexity_goal
+from mlbench_core.evaluation.goals import (
+    task3_time_to_preplexity_light_goal,
+    task3_time_to_preplexity_goal,
+)
 from mlbench_core.evaluation.pytorch.metrics import Perplexity
-from mlbench_core.lr_scheduler.pytorch.lr import \
-    MultistepLearningRatesWithWarmup
+from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
 from mlbench_core.models.pytorch.nlp import RNNLM
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker, AverageMeter
@@ -30,11 +30,19 @@ from torch.nn.modules.loss import CrossEntropyLoss
 from torch.nn.utils import clip_grad_norm_
 
 LOG_EVERY_N_BATCHES = 25
-logger = logging.getLogger('mlbench')
+logger = logging.getLogger("mlbench")
 
 
-def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
-               validation_only=False, use_cuda=False, light_target=False):
+def train_loop(
+    run_id,
+    dataset_dir,
+    ckpt_run_dir,
+    output_dir,
+    validation_only=False,
+    use_cuda=False,
+    light_target=False,
+    by_layer=False,
+):
     """Train loop"""
     num_parallel_workers = 2
     max_batch_per_epoch = None
@@ -47,16 +55,17 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
     rnn_bptt_len = 35
     drop_rate = 0.0
     rnn_weight_norm = False
-    dtype = 'fp32'
+    dtype = "fp32"
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
     train_set = Wikitext2(dataset_dir, download=True, train=True)
-    val_set = Wikitext2(dataset_dir, text_field=train_set.text_field, download=False, train=False)
+    val_set = Wikitext2(
+        dataset_dir, text_field=train_set.text_field, download=False, train=False
+    )
 
-    train_set.text_field.build_vocab(train_set, vectors=None,
-                                     vectors_cache=None)
+    train_set.text_field.build_vocab(train_set, vectors=None, vectors_cache=None)
 
     train_loader, _ = torchtext.data.BPTTIterator.splits(
         (train_set, val_set),
@@ -83,7 +92,8 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
         nlayers=rnn_n_layers,
         tie_weights=rnn_tie_weights,
         dropout=drop_rate,
-        weight_norm=rnn_weight_norm,)
+        weight_norm=rnn_weight_norm,
+    )
 
     optimizer = CentralizedSGD(
         world_size=world_size,
@@ -91,7 +101,10 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
         lr=0.2,
         momentum=0.9,
         weight_decay=1e-4,
-        nesterov=False)
+        nesterov=False,
+        use_cuda=dist.get_backend() == dist.Backend.NCCL,
+        by_layer=by_layer,
+    )
 
     # Create a learning rate scheduler for an optimizer
     scheduler = MultistepLearningRatesWithWarmup(
@@ -102,7 +115,8 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
         lr=0.1,
         warmup_duration=5,
         warmup_linear_scaling=True,
-        warmup_init_lr=None)
+        warmup_init_lr=None,
+    )
 
     # A loss_function for computing the loss
     loss_function = CrossEntropyLoss(reduction="mean")
@@ -112,9 +126,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
         loss_function = loss_function.cuda()
 
     # Metrics like Top 1/5 Accuracy
-    metrics = [
-        Perplexity()
-    ]
+    metrics = [Perplexity()]
 
     if light_target:
         goal = task3_time_to_preplexity_light_goal
@@ -130,9 +142,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
     num_batches_per_device_train = len(train_loader)
 
     for epoch in range(0, train_epochs):
-        _hidden = (
-            model.init_hidden(batch_size)
-        )
+        _hidden = model.init_hidden(batch_size)
 
         # configure local step.
         for batch_idx, batch in enumerate(train_loader):
@@ -142,40 +152,34 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
             scheduler.step()
 
             input = batch.text[
-                :,
-                rank
-                * batch_size : (rank + 1)
-                * batch_size,
+                :, rank * batch_size : (rank + 1) * batch_size,
             ]
             target = batch.target[
-                :,
-                rank
-                * batch_size : (rank + 1)
-                * batch_size,
+                :, rank * batch_size : (rank + 1) * batch_size,
             ]
 
             # repackage the hidden.
-            _hidden = (
-                model.repackage_hidden(_hidden)
-            )
+            _hidden = model.repackage_hidden(_hidden)
 
             # inference and get current performance.
             tracker.batch_start()
             optimizer.zero_grad()
 
-            tracker.record_batch_step('init')
+            tracker.record_batch_step("init")
 
             output, _hidden = model(input, _hidden)
 
-            tracker.record_batch_step('forward')
+            tracker.record_batch_step("forward")
 
-            loss = loss_function(output.view(-1, n_tokens), target.contiguous().view(-1))
+            loss = loss_function(
+                output.view(-1, n_tokens), target.contiguous().view(-1)
+            )
 
-            tracker.record_batch_step('loss')
+            tracker.record_batch_step("loss")
 
             loss.backward()
 
-            tracker.record_batch_step('backward')
+            tracker.record_batch_step("backward")
 
             # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
             clip_grad_norm_(model.parameters(), rnn_clip)
@@ -184,18 +188,18 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
 
             progress = batch_idx / num_batches_per_device_train
 
-            log_to_api = (batch_idx % LOG_EVERY_N_BATCHES == 0
-                          or batch_idx == num_batches_per_device_train)
+            log_to_api = (
+                batch_idx % LOG_EVERY_N_BATCHES == 0
+                or batch_idx == num_batches_per_device_train
+            )
 
             for metric in metrics:
                 metric_value = metric(loss, output, target).item()
 
                 if tracker:
                     tracker.record_metric(
-                        metric,
-                        metric_value,
-                        output.size()[0],
-                        log_to_api=log_to_api)
+                        metric, metric_value, output.size()[0], log_to_api=log_to_api
+                    )
 
             status = "Epoch {:5.2f} Batch {:4}: ".format(progress, batch_idx)
 
@@ -226,7 +230,9 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
                 output, _hidden = model(input, _hidden)
 
                 # Compute loss
-                loss = loss_function(output.view(-1, n_tokens), target.contiguous().view(-1))
+                loss = loss_function(
+                    output.view(-1, n_tokens), target.contiguous().view(-1)
+                )
 
                 # Update loss
                 losses.update(loss.item(), input.size(0))
@@ -237,8 +243,7 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
                     metric.update(metric_value, input.size(0))
 
         # Aggregate metrics and loss for all workers
-        metrics_averages = {metric: metric.average().item()
-                            for metric in metrics}
+        metrics_averages = {metric: metric.average().item() for metric in metrics}
         loss_average = global_average(losses.sum, losses.count).item()
         tracker.validation_end()
 
@@ -251,26 +256,26 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
                 tracker.record_stat(
                     "global_{}".format(metric.name),
                     global_metric_value,
-                    log_to_api=True)
+                    log_to_api=True,
+                )
 
         if rank == 0:
             logger.info(
-                '{} for rank {}:(best epoch {}, current epoch {}): {:.3f}'.format(
+                "{} for rank {}:(best epoch {}, current epoch {}): {:.3f}".format(
                     tracker.primary_metric.name,
                     tracker.rank,
                     tracker.best_epoch,
                     tracker.current_epoch,
-                    tracker.best_metric_value))
+                    tracker.best_metric_value,
+                )
+            )
 
         tracker.record_loss(loss, log_to_api=True)
 
         global_loss = global_average(loss_average, 1).item()
 
         if rank == 0:
-            tracker.record_stat(
-                "global_loss",
-                global_loss,
-                log_to_api=True)
+            tracker.record_stat("global_loss", global_loss, log_to_api=True)
         tracker.validation_end()
 
         tracker.epoch_end()
@@ -303,49 +308,90 @@ def train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
         #     return
 
 
-def main(run_id, dataset_dir, ckpt_run_dir, output_dir, validation_only=False,
-         gpu=False, light_target=False):
+def main(
+    run_id,
+    dataset_dir,
+    ckpt_run_dir,
+    output_dir,
+    validation_only=False,
+    gpu=False,
+    light_target=False,
+):
     r"""Main logic."""
 
     with initialize_backends(
-            comm_backend='mpi',
-            logging_level='INFO',
-            logging_file=os.path.join(output_dir, 'mlbench.log'),
+        comm_backend="mpi",
+        logging_level="INFO",
+        logging_file=os.path.join(output_dir, "mlbench.log"),
+        use_cuda=gpu,
+        seed=42,
+        cudnn_deterministic=False,
+        ckpt_run_dir=ckpt_run_dir,
+        delete_existing_ckpts=not validation_only,
+    ):
+        train_loop(
+            run_id,
+            dataset_dir,
+            ckpt_run_dir,
+            output_dir,
+            validation_only,
             use_cuda=gpu,
-            seed=42,
-            cudnn_deterministic=False,
-            ckpt_run_dir=ckpt_run_dir,
-            delete_existing_ckpts=not validation_only):
-        train_loop(run_id, dataset_dir, ckpt_run_dir, output_dir,
-                   validation_only, use_cuda=gpu, light_target=light_target)
+            light_target=light_target,
+        )
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Process run parameters')
-    parser.add_argument('--run_id', type=str, default='1',
-                        help='The id of the run')
-    parser.add_argument('--root-dataset', type=str, default='/datasets',
-                        help='Default root directory to dataset.')
-    parser.add_argument('--root-checkpoint', type=str, default='/checkpoint',
-                        help='Default root directory to checkpoint.')
-    parser.add_argument('--root-output', type=str, default='/output',
-                        help='Default root directory to output.')
-    parser.add_argument('--validation_only', action='store_true',
-                        default=False, help='Only validate from checkpoints.')
-    parser.add_argument('--gpu', action='store_true', default=False,
-                        help='Train with GPU')
-    parser.add_argument('--light', action='store_true', default=False,
-                        help='Train to light target metric goal')
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Process run parameters")
+    parser.add_argument("--run_id", type=str, default="1", help="The id of the run")
+    parser.add_argument(
+        "--root-dataset",
+        type=str,
+        default="/datasets",
+        help="Default root directory to dataset.",
+    )
+    parser.add_argument(
+        "--root-checkpoint",
+        type=str,
+        default="/checkpoint",
+        help="Default root directory to checkpoint.",
+    )
+    parser.add_argument(
+        "--root-output",
+        type=str,
+        default="/output",
+        help="Default root directory to output.",
+    )
+    parser.add_argument(
+        "--validation_only",
+        action="store_true",
+        default=False,
+        help="Only validate from checkpoints.",
+    )
+    parser.add_argument(
+        "--gpu", action="store_true", default=False, help="Train with GPU"
+    )
+    parser.add_argument(
+        "--light",
+        action="store_true",
+        default=False,
+        help="Train to light target metric goal",
+    )
     args = parser.parse_args()
 
-    uid = 'scaling'
-    dataset_dir = os.path.join(args.root_dataset, 'torch', 'wikitext')
+    uid = "scaling"
+    dataset_dir = os.path.join(args.root_dataset, "torch", "wikitext")
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)
     os.makedirs(dataset_dir, exist_ok=True)
     os.makedirs(ckpt_run_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
-    main(args.run_id, dataset_dir, ckpt_run_dir,
-         output_dir, validation_only=args.validation_only, gpu=args.gpu,
-         light_target=args.light)
+    main(
+        args.run_id,
+        dataset_dir,
+        ckpt_run_dir,
+        output_dir,
+        validation_only=args.validation_only,
+        gpu=args.gpu,
+        light_target=args.light,
+    )

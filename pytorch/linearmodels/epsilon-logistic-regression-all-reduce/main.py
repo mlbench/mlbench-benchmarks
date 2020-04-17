@@ -46,6 +46,7 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
+    by_layer=False,
 ):
     r"""Main logic."""
     num_parallel_workers = 0
@@ -63,7 +64,13 @@ def train_loop(
 
     model = LogisticRegression(n_features)
 
-    optimizer = CentralizedSGD(world_size=world_size, model=model, lr=0.1)
+    optimizer = CentralizedSGD(
+        world_size=world_size,
+        model=model,
+        lr=0.1,
+        use_cuda=dist.get_backend() == dist.Backend.NCCL,
+        by_layer=by_layer,
+    )
 
     # Create a learning rate scheduler for an optimizer
     scheduler = SQRTTimeDecayLR(optimizer, alpha)

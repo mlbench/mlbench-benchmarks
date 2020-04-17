@@ -44,6 +44,7 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
+    by_layer=False,
 ):
     r"""Main logic."""
     num_parallel_workers = 2
@@ -63,6 +64,8 @@ def train_loop(
         momentum=0.9,
         weight_decay=1e-4,
         nesterov=False,
+        use_cuda=dist.get_backend() == dist.Backend.NCCL,
+        by_layer=by_layer,
     )
 
     # Create a learning rate scheduler for an optimizer
