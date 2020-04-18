@@ -68,7 +68,7 @@ def train_loop(
         world_size=world_size,
         model=model,
         lr=0.1,
-        use_cuda=dist.get_backend() == dist.Backend.NCCL,
+        use_cuda=use_cuda,
         by_layer=by_layer,
     )
 
