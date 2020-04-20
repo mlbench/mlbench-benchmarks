@@ -8,7 +8,7 @@ import json
 import os
 import time
 
-import horovod.torch as hvd
+# import horovod.torch as hvd
 import torch
 import torch.distributed as dist
 import torchtext
@@ -47,7 +47,7 @@ def set_iter_size(global_bs, train_bs):
     return train_iter_size
 
 
-def build_optimizer(model, math, optimizer, grad_clip, loss_scaling, use_cuda, use_horovod, world_size):
+def build_optimizer(model, math, optimizer, grad_clip, loss_scaling, use_cuda, world_size):
     if math == "fp32":
         fp_optimizer = FP32Optimizer(
             model=model, optimizer=optimizer, grad_clip=grad_clip
@@ -68,8 +68,7 @@ def build_optimizer(model, math, optimizer, grad_clip, loss_scaling, use_cuda, u
             grad_clip=grad_clip,
             loss_scale=loss_scaling["init_scale"],
             dls_upscale_interval=loss_scaling["upscale_interval"],
-            use_cuda=use_cuda,
-            use_horovod=use_horovod,
+            use_cuda=False,
             world_size=world_size
         )
     else:
@@ -132,9 +131,9 @@ def train_loop(
     lr = 2.00e-3
     grad_clip = 5.0
 
-    use_horovod = math_mode == "fp16" and dist.get_backend() == dist.Backend.MPI
-    if use_horovod:
-        hvd.init()
+    # use_horovod = math_mode == "fp16" and dist.get_backend() == dist.Backend.MPI
+    # if use_horovod:
+    #     hvd.init()
     # Loss
     loss_scaling = {"init_scale": 8192, "upscale_interval": 128}
 
@@ -245,7 +244,6 @@ def train_loop(
         optimizer=optimizer,
         grad_clip=grad_clip,
         loss_scaling=loss_scaling,
-        use_horovod=use_horovod,
         use_cuda=use_cuda,
         world_size=world_size
     )
