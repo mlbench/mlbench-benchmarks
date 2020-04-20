@@ -64,7 +64,7 @@ def train_loop(
         momentum=0.9,
         weight_decay=1e-4,
         nesterov=False,
-        use_cuda=dist.get_backend() == dist.Backend.NCCL,
+        use_cuda=use_cuda,
         by_layer=by_layer,
     )
 
