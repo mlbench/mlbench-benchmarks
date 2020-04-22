@@ -8,7 +8,6 @@ import json
 import os
 import time
 
-# import horovod.torch as hvd
 import torch
 import torch.distributed as dist
 import torchtext
@@ -68,8 +67,9 @@ def build_optimizer(model, math, optimizer, grad_clip, loss_scaling, use_cuda, w
             grad_clip=grad_clip,
             loss_scale=loss_scaling["init_scale"],
             dls_upscale_interval=loss_scaling["upscale_interval"],
-            use_cuda=False,
-            world_size=world_size
+            use_cuda=use_cuda,
+            world_size=world_size,
+            by_layer=True
         )
     else:
         return NotImplementedError()
@@ -131,9 +131,6 @@ def train_loop(
     lr = 2.00e-3
     grad_clip = 5.0
 
-    # use_horovod = math_mode == "fp16" and dist.get_backend() == dist.Backend.MPI
-    # if use_horovod:
-    #     hvd.init()
     # Loss
     loss_scaling = {"init_scale": 8192, "upscale_interval": 128}
 
@@ -212,6 +209,7 @@ def train_loop(
         sort_within_batch=True,
         device=torch.device("cuda" if use_cuda else "cpu"),
         sort_key=lambda x: len(x.src),
+
     )
 
     # Build optimizer & scheduler
@@ -233,11 +231,6 @@ def train_loop(
     else:
         raise ValueError("Math mode {} not supported".format(math_mode))
 
-    # Create a learning rate scheduler for an optimizer
-    scheduler = ExponentialWarmupMultiStepLR(
-        optimizer, total_train_iters, **scheduler_config
-    )
-
     fp_optimizer, model = build_optimizer(
         model=model,
         math=math_mode,
@@ -246,6 +239,11 @@ def train_loop(
         loss_scaling=loss_scaling,
         use_cuda=use_cuda,
         world_size=world_size
+    )
+
+    # Create a learning rate scheduler for an optimizer
+    scheduler = ExponentialWarmupMultiStepLR(
+        optimizer, total_train_iters, **scheduler_config
     )
 
     # Translator
@@ -271,6 +269,7 @@ def train_loop(
         tracker=None,
         metrics=metrics,
         iter_size=train_iter_size,
+        use_cuda=use_cuda
     )
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.BEST
