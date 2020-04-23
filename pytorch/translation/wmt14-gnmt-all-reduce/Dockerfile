@@ -8,6 +8,13 @@ RUN git clone https://github.com/NVIDIA/apex && cd apex && \
     pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./ && \
     cd ..
 
+# Horovod
+RUN HOROVOD_GPU_ALLREDUCE=MPI HOROVOD_GPU_BROADCAST=MPI \
+    HOROVOD_HIERARCHICAL_ALLREDUCE=1 HOROVOD_WITH_PYTORCH=1\
+    HOROVOD_WITH_MPI=1\
+    pip install --no-cache-dir horovod
+
+
 ADD ./requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 RUN /conda/bin/python -m spacy download en && /conda/bin/python -m spacy download de
@@ -15,7 +22,6 @@ RUN /conda/bin/python -m spacy download en && /conda/bin/python -m spacy downloa
 RUN mkdir /codes
 ADD ./main.py /codes/main.py
 
-ENV NCCL_DEBUG INFO
 ENV PYTHONPATH /codes
 
 # Remove empty ld

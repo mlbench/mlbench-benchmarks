@@ -29,6 +29,7 @@ from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq, Checkpointer
 from torch import nn
+import horovod.torch as hvd
 
 
 def set_iter_size(global_bs, train_bs):
@@ -46,7 +47,7 @@ def set_iter_size(global_bs, train_bs):
     return train_iter_size
 
 
-def build_optimizer(model, math, optimizer, grad_clip, loss_scaling, use_cuda, world_size):
+def build_optimizer(model, math, optimizer, grad_clip, loss_scaling, use_cuda, world_size, use_horovod):
     if math == "fp32":
         fp_optimizer = FP32Optimizer(
             model=model, optimizer=optimizer, grad_clip=grad_clip
@@ -69,7 +70,7 @@ def build_optimizer(model, math, optimizer, grad_clip, loss_scaling, use_cuda, w
             dls_upscale_interval=loss_scaling["upscale_interval"],
             use_cuda=use_cuda,
             world_size=world_size,
-            by_layer=True
+            use_horovod=use_horovod
         )
     else:
         return NotImplementedError()
@@ -231,6 +232,10 @@ def train_loop(
     else:
         raise ValueError("Math mode {} not supported".format(math_mode))
 
+    use_horovod = math_mode == "fp16" and dist.get_backend() == dist.Backend.MPI
+    if use_horovod:
+        hvd.init()
+
     fp_optimizer, model = build_optimizer(
         model=model,
         math=math_mode,
@@ -238,7 +243,8 @@ def train_loop(
         grad_clip=grad_clip,
         loss_scaling=loss_scaling,
         use_cuda=use_cuda,
-        world_size=world_size
+        world_size=world_size,
+        use_horovod=use_horovod
     )
 
     # Create a learning rate scheduler for an optimizer
@@ -269,7 +275,6 @@ def train_loop(
         tracker=None,
         metrics=metrics,
         iter_size=train_iter_size,
-        use_cuda=use_cuda
     )
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.BEST
