@@ -44,19 +44,21 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
+    by_layer=False
 ):
     """Train loop"""
     num_parallel_workers = 2
     max_batch_per_epoch = None
     train_epochs = 164
-    batch_size = 256
-    rnn_n_hidden = 200
-    rnn_n_layers = 2
+    batch_size = 128
+    rnn_n_hidden = 650
+    rnn_n_layers = 3
     rnn_tie_weights = True
-    rnn_clip = 0.25
-    drop_rate = 0.0
+    rnn_clip = 0.4
+    drop_rate = 0.4
     rnn_weight_norm = False
-    bptt_len = 35
+    bptt_len = 30
+    lr = 1.0
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -103,19 +105,21 @@ def train_loop(
     optimizer = CentralizedSGD(
         world_size=world_size,
         model=model,
-        lr=0.2,
+        lr=lr,
         momentum=0.9,
         weight_decay=1e-4,
         nesterov=False,
+        use_cuda=use_cuda,
+        by_layer=by_layer
     )
 
     # Create a learning rate scheduler for an optimizer
     scheduler = MultistepLearningRatesWithWarmup(
         optimizer,
         world_size=world_size,
-        milestones=[82, 109],
+        milestones=[150, 225],
         gamma=0.1,
-        lr=0.1,
+        lr=lr,
         warmup_duration=5,
         warmup_linear_scaling=True,
         warmup_init_lr=None,
@@ -136,7 +140,7 @@ def train_loop(
     else:
         goal = task3_time_to_preplexity_goal
 
-    tracker = Tracker(metrics, run_id, rank, goal=goal)
+    tracker = Tracker(metrics, run_id, rank, goal=goal, minimize=True)
 
     dist.barrier()
 
@@ -190,6 +194,9 @@ def main(
     dataset_dir,
     ckpt_run_dir,
     output_dir,
+    rank,
+    hosts,
+    backend,
     validation_only=False,
     gpu=False,
     light_target=False,
@@ -197,7 +204,9 @@ def main(
     r"""Main logic."""
 
     with initialize_backends(
-        comm_backend="mpi",
+        comm_backend=backend,
+        hosts=hosts,
+        rank=rank,
         logging_level="INFO",
         logging_file=os.path.join(output_dir, "mlbench.log"),
         use_cuda=gpu,
@@ -253,9 +262,14 @@ if __name__ == "__main__":
         default=False,
         help="Train to light target metric goal",
     )
+    parser.add_argument("--rank", type=int, default=1, help="The rank of the process")
+    parser.add_argument(
+        "--backend", type=str, default="mpi", help="PyTorch distributed backend"
+    )
+    parser.add_argument("--hosts", type=str, help="The list of hosts")
     args = parser.parse_args()
 
-    uid = "scaling"
+    uid = "lstm"
     dataset_dir = os.path.join(args.root_dataset, "torch", "wikitext")
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)
@@ -267,6 +281,9 @@ if __name__ == "__main__":
         dataset_dir,
         ckpt_run_dir,
         output_dir,
+        args.rank,
+        args.hosts,
+        args.backend,
         validation_only=args.validation_only,
         gpu=args.gpu,
         light_target=args.light,
