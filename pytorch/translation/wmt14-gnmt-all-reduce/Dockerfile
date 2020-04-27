@@ -4,20 +4,23 @@ FROM mlbench/mlbench-pytorch-base:pytorch-v1.4.0
 # RUN apt-get update && apt-get install -y vim net-tools
 
 # The reference implementation and user defined implementations are placed here.
+#RUN git clone https://github.com/NVIDIA/apex && cd apex && git checkout f3a960f && \
+#    pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./ && \
+#    cd ..
 RUN git clone https://github.com/NVIDIA/apex && cd apex && \
     pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./ && \
     cd ..
-
 # Horovod
 RUN HOROVOD_GPU_ALLREDUCE=MPI HOROVOD_GPU_BROADCAST=MPI \
     HOROVOD_HIERARCHICAL_ALLREDUCE=1 HOROVOD_WITH_PYTORCH=1\
     HOROVOD_WITH_MPI=1\
     pip install --no-cache-dir horovod
 
+RUN pip install spacy==2.2.3
+RUN /conda/bin/python -m spacy download en && /conda/bin/python -m spacy download de
 
 ADD ./requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
-RUN /conda/bin/python -m spacy download en && /conda/bin/python -m spacy download de
 
 RUN mkdir /codes
 ADD ./main.py /codes/main.py

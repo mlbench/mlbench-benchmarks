@@ -10,13 +10,12 @@ import time
 
 import torch
 import torch.distributed as dist
-import torchtext
 from apex import amp
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
-    CheckpointsEvaluationControlFlow,
-)
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
+    CheckpointsEvaluationControlFlow
 from mlbench_core.controlflow.pytorch.gnmt import GNMTTrainer
-from mlbench_core.dataset.translation.pytorch import WMT14Dataset, config
+from mlbench_core.dataset.translation.pytorch import (WMT14Dataset,
+                                                      build_collate_fn, config)
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
 from mlbench_core.evaluation.pytorch.criterion import LabelSmoothing
@@ -24,11 +23,14 @@ from mlbench_core.evaluation.pytorch.inference import Translator
 from mlbench_core.evaluation.pytorch.metrics import BLEUScore
 from mlbench_core.lr_scheduler.pytorch.lr import ExponentialWarmupMultiStepLR
 from mlbench_core.models.pytorch.gnmt import GNMT
-from mlbench_core.optim.pytorch import FP32Optimizer, AMPOptimizer, Adam, CentralizedAdam
+from mlbench_core.optim.pytorch import (Adam, AMPOptimizer, CentralizedAdam,
+                                        FP32Optimizer)
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
-from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq, Checkpointer
+from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
 from torch import nn
+from torch.utils.data import DataLoader
+
 import horovod.torch as hvd
 
 
@@ -47,7 +49,9 @@ def set_iter_size(global_bs, train_bs):
     return train_iter_size
 
 
-def build_optimizer(model, math, optimizer, grad_clip, loss_scaling, use_cuda, world_size, use_horovod):
+def build_optimizer(
+    model, math, optimizer, grad_clip, loss_scaling, use_cuda, world_size, use_horovod
+):
     if math == "fp32":
         fp_optimizer = FP32Optimizer(
             model=model, optimizer=optimizer, grad_clip=grad_clip
@@ -70,7 +74,7 @@ def build_optimizer(model, math, optimizer, grad_clip, loss_scaling, use_cuda, w
             dls_upscale_interval=loss_scaling["upscale_interval"],
             use_cuda=use_cuda,
             world_size=world_size,
-            use_horovod=use_horovod
+            use_horovod=use_horovod,
         )
     else:
         return NotImplementedError()
@@ -98,12 +102,13 @@ def train_loop(
 ):
     """Train loop"""
     train_epochs = 6
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     train_min_len, train_max_len = 0, 50
     val_min_len, val_max_len = 0, 150
     math_mode = "fp16"  # One of `fp16`, `fp32`
     batch_first = False
-    include_lengths = True
     lang = {"src": "en", "trg": "de"}
 
     # Model attributes
@@ -150,8 +155,6 @@ def train_loop(
     # Build train/val datsets
     train_set = WMT14Dataset(
         dataset_dir,
-        batch_first=batch_first,
-        include_lengths=include_lengths,
         math_precision=math_mode,
         lang=lang,
         train=True,
@@ -162,15 +165,15 @@ def train_loop(
     )
     val_set = WMT14Dataset(
         dataset_dir,
-        batch_first=batch_first,
-        include_lengths=include_lengths,
         math_precision=math_mode,
         lang=lang,
         validation=True,
         download=False,
         min_len=val_min_len,
         max_len=val_max_len,
+        sort=True,
     )
+
     tokenizer = train_set.fields["trg"]
 
     # Build model
@@ -193,24 +196,24 @@ def train_loop(
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
     val_set = partition_dataset_by_rank(val_set, rank, world_size)
 
-    # Get data loaders
-    train_loader = torchtext.data.BucketIterator(
-        dataset=train_set,
+    collate_fn = build_collate_fn(batch_first=batch_first, sort=True)
+    train_loader = DataLoader(
+        train_set,
         batch_size=train_batch_size,
-        shuffle=False,
-        sort_within_batch=True,
-        device=torch.device("cuda" if use_cuda else "cpu"),
-        sort_key=lambda x: len(x.src),
+        collate_fn=collate_fn,
+        num_workers=0,
+        pin_memory=False,
+        drop_last=False,
+        shuffle=True,
     )
 
-    val_loader = torchtext.data.BucketIterator(
-        dataset=val_set,
+    val_loader = DataLoader(
+        val_set,
         batch_size=val_batch_size,
-        shuffle=False,
-        sort_within_batch=True,
-        device=torch.device("cuda" if use_cuda else "cpu"),
-        sort_key=lambda x: len(x.src),
-
+        collate_fn=collate_fn,
+        num_workers=0,
+        pin_memory=True,
+        drop_last=False,
     )
 
     # Build optimizer & scheduler
@@ -244,7 +247,7 @@ def train_loop(
         loss_scaling=loss_scaling,
         use_cuda=use_cuda,
         world_size=world_size,
-        use_horovod=use_horovod
+        use_horovod=use_horovod,
     )
 
     # Create a learning rate scheduler for an optimizer
@@ -275,6 +278,7 @@ def train_loop(
         tracker=None,
         metrics=metrics,
         iter_size=train_iter_size,
+        use_cuda=use_cuda,
     )
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.BEST
