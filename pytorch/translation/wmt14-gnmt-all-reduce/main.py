@@ -23,12 +23,14 @@ from mlbench_core.evaluation.pytorch.inference import Translator
 from mlbench_core.evaluation.pytorch.metrics import BLEUScore
 from mlbench_core.lr_scheduler.pytorch.lr import ExponentialWarmupMultiStepLR
 from mlbench_core.models.pytorch.gnmt import GNMT
-from mlbench_core.optim.pytorch import (Adam, AMPOptimizer, CentralizedAdam,
-                                        FP32Optimizer)
+from mlbench_core.optim.pytorch.fp_optimizers import (AMPOptimizer,
+                                                      FP16Optimizer,
+                                                      FP32Optimizer)
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
 from torch import nn
+from torch.optim import Adam
 from torch.utils.data import DataLoader
 
 import horovod.torch as hvd
@@ -50,14 +52,11 @@ def set_iter_size(global_bs, train_bs):
 
 
 def build_optimizer(
-    model, math, optimizer, grad_clip, loss_scaling, use_cuda, world_size, use_horovod
+    model, math, grad_clip, loss_scaling, lr, use_cuda, world_size, use_horovod
 ):
-    if math == "fp32":
-        fp_optimizer = FP32Optimizer(
-            model=model, optimizer=optimizer, grad_clip=grad_clip
-        )
-
-    elif math == "fp16":
+    params = model.parameters()
+    if math == "amp_fp16":
+        optimizer = Adam(params=params, lr=lr)
         model, optimizer = amp.initialize(
             model,
             optimizer,
@@ -68,7 +67,6 @@ def build_optimizer(
 
         fp_optimizer = AMPOptimizer(
             model,
-            optimizer,
             grad_clip=grad_clip,
             loss_scale=loss_scaling["init_scale"],
             dls_upscale_interval=loss_scaling["upscale_interval"],
@@ -77,9 +75,35 @@ def build_optimizer(
             use_horovod=use_horovod,
         )
     else:
-        return NotImplementedError()
 
-    return fp_optimizer, model
+        if math == "fp32":
+            fp_optimizer = FP32Optimizer(
+                model=model,
+                grad_clip=grad_clip,
+                world_size=world_size,
+                use_cuda=use_cuda,
+            )
+
+        elif math == "fp16":
+            model = model.half()  # Set model to half precision
+            fp_optimizer = FP16Optimizer(
+                model,
+                world_size=world_size,
+                grad_clip=grad_clip,
+                use_cuda=use_cuda,
+                use_horovod=use_horovod,
+                loss_scale=loss_scaling["init_scale"],
+                dls_upscale_interval=loss_scaling["upscale_interval"],
+            )
+
+            # Keep params in fp32 for optimizer
+            params = [fp_optimizer.fp32_params]
+        else:
+            return NotImplementedError()
+
+        optimizer = Adam(params=params, lr=lr)
+    fp_optimizer.set_optimizer(optimizer)
+    return fp_optimizer, optimizer, model
 
 
 def build_criterion(padding_idx, smoothing):
@@ -107,7 +131,7 @@ def train_loop(
 
     train_min_len, train_max_len = 0, 50
     val_min_len, val_max_len = 0, 150
-    math_mode = "fp16"  # One of `fp16`, `fp32`
+    math_mode = "amp_fp16"  # One of `fp16`, `fp32` or `amp_fp16`
     batch_first = False
     lang = {"src": "en", "trg": "de"}
 
@@ -226,23 +250,14 @@ def train_loop(
         model = model.cuda()
         loss_function = loss_function.cuda()
 
-    if math_mode == "fp16":
-        optimizer = Adam(params=model.parameters(), lr=lr)
-    elif math_mode == "fp32":
-        optimizer = CentralizedAdam(
-            world_size=world_size, model=model, lr=lr, use_cuda=use_cuda,
-        )
-    else:
-        raise ValueError("Math mode {} not supported".format(math_mode))
-
-    use_horovod = math_mode == "fp16" and dist.get_backend() == dist.Backend.MPI
+    use_horovod = True  # math_mode == "fp16" and dist.get_backend() == dist.Backend.MPI
     if use_horovod:
         hvd.init()
 
-    fp_optimizer, model = build_optimizer(
+    fp_optimizer, optimizer, model = build_optimizer(
         model=model,
         math=math_mode,
-        optimizer=optimizer,
+        lr=lr,
         grad_clip=grad_clip,
         loss_scaling=loss_scaling,
         use_cuda=use_cuda,
@@ -258,6 +273,7 @@ def train_loop(
     # Translator
     translator = Translator(
         model=model,
+        batch_first=batch_first,
         trg_tokenizer=tokenizer,
         beam_size=beam_size,
         len_norm_factor=len_norm_factor,
@@ -269,6 +285,7 @@ def train_loop(
     # Trainer
     trainer = GNMTTrainer(
         model=model,
+        batch_first=batch_first,
         criterion=loss_function,
         fp_optimizer=fp_optimizer,
         scheduler=scheduler,
@@ -280,6 +297,7 @@ def train_loop(
         iter_size=train_iter_size,
         use_cuda=use_cuda,
     )
+
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.BEST
     )
@@ -287,9 +305,9 @@ def train_loop(
     if not validation_only:
 
         if light_target:
-            goal = task4_time_to_bleu_goal(20)
+            goal = task4_time_to_bleu_goal(18)
         else:
-            goal = task4_time_to_bleu_goal(24)
+            goal = task4_time_to_bleu_goal(20)
 
         tracker = Tracker(metrics, run_id, rank, goal=goal)
 

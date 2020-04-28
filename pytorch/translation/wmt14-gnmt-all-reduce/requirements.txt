@@ -1,4 +1,4 @@
-mlbench-core==2.4.0.dev109
+mlbench-core==2.4.0.dev134
 spacy==2.2.3
 sacrebleu==1.4.3
 sacremoses==0.0.38
