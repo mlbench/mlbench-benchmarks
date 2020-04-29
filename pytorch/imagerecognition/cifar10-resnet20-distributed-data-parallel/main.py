@@ -1,7 +1,11 @@
-"""Training ResNet for CIFAR-10 dataset.
+"""Training ResNet for CIFAR-10 dataset with Distributed Data Parallel.
 
-This implements the 1a image recognition benchmark task,
-see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-image
+This implements the 1a image recognition benchmark task with the following
+modifications:
+- The original model is wrapped in a DistributedDataParallel object.
+- The optimizer of choice is the SGD optimizer provided by PyTorch.
+- The model is trained on GPU by default.
+See https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-image
 -classification-resnet-cifar-10
 for more details.
 
