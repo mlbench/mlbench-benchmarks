@@ -19,7 +19,7 @@ from mlbench_core.dataset.translation.pytorch import (WMT14Dataset,
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
 from mlbench_core.evaluation.pytorch.criterion import LabelSmoothing
-from mlbench_core.evaluation.pytorch.inference import Translator
+from mlbench_core.utils.pytorch.inference import Translator
 from mlbench_core.evaluation.pytorch.metrics import BLEUScore
 from mlbench_core.lr_scheduler.pytorch.lr import ExponentialWarmupMultiStepLR
 from mlbench_core.models.pytorch.gnmt import GNMT
