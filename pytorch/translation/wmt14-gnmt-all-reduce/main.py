@@ -5,114 +5,44 @@ This implements the machine translation benchmark tasks,
 """
 import argparse
 import json
+import logging
 import os
 import time
 
 import torch
 import torch.distributed as dist
-from apex import amp
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
-    CheckpointsEvaluationControlFlow
-from mlbench_core.controlflow.pytorch.gnmt import GNMTTrainer
-from mlbench_core.dataset.translation.pytorch import (WMT14Dataset,
-                                                      build_collate_fn, config)
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
+    CheckpointsEvaluationControlFlow,
+)
+from mlbench_core.controlflow.pytorch.controlflow import (
+    record_train_batch_stats,
+    record_validation_stats,
+)
+from mlbench_core.dataset.nlp.pytorch import WMT14Dataset, build_collate_fn
+from mlbench_core.dataset.nlp.pytorch.wmt14 import wmt14_config
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
-from mlbench_core.evaluation.pytorch.criterion import LabelSmoothing
-from mlbench_core.utils.pytorch.inference import Translator
 from mlbench_core.evaluation.pytorch.metrics import BLEUScore
 from mlbench_core.lr_scheduler.pytorch.lr import ExponentialWarmupMultiStepLR
 from mlbench_core.models.pytorch.gnmt import GNMT
-from mlbench_core.optim.pytorch.fp_optimizers import (AMPOptimizer,
-                                                      FP16Optimizer,
-                                                      FP32Optimizer)
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-from torch import nn
-from torch.optim import Adam
+from mlbench_core.utils.pytorch.inference import Translator
 from torch.utils.data import DataLoader
 
 import horovod.torch as hvd
+from utils import (
+    build_criterion,
+    build_optimizer,
+    compute_loss,
+    compute_model_output,
+    prepare_batch,
+    set_iter_size,
+    validation_round,
+)
 
-
-def set_iter_size(global_bs, train_bs):
-    """
-    Automatically set train_iter_size based on train_global_batch_size,
-    world_size and per-worker train_batch_size
-
-    """
-    world_size = dist.get_world_size()
-    assert global_bs % (train_bs * world_size) == 0
-    train_iter_size = global_bs // (train_bs * world_size)
-    print(
-        f"Global batch size was set, " f"Setting train_iter_size to {train_iter_size}"
-    )
-    return train_iter_size
-
-
-def build_optimizer(
-    model, math, grad_clip, loss_scaling, lr, use_cuda, world_size, use_horovod
-):
-    params = model.parameters()
-    if math == "amp_fp16":
-        optimizer = Adam(params=params, lr=lr)
-        model, optimizer = amp.initialize(
-            model,
-            optimizer,
-            cast_model_outputs=torch.float16,
-            keep_batchnorm_fp32=False,
-            opt_level="O2",
-        )
-
-        fp_optimizer = AMPOptimizer(
-            model,
-            grad_clip=grad_clip,
-            loss_scale=loss_scaling["init_scale"],
-            dls_upscale_interval=loss_scaling["upscale_interval"],
-            use_cuda=use_cuda,
-            world_size=world_size,
-            use_horovod=use_horovod,
-        )
-    else:
-
-        if math == "fp32":
-            fp_optimizer = FP32Optimizer(
-                model=model,
-                grad_clip=grad_clip,
-                world_size=world_size,
-                use_cuda=use_cuda,
-            )
-
-        elif math == "fp16":
-            model = model.half()  # Set model to half precision
-            fp_optimizer = FP16Optimizer(
-                model,
-                world_size=world_size,
-                grad_clip=grad_clip,
-                use_cuda=use_cuda,
-                use_horovod=use_horovod,
-                loss_scale=loss_scaling["init_scale"],
-                dls_upscale_interval=loss_scaling["upscale_interval"],
-            )
-
-            # Keep params in fp32 for optimizer
-            params = [fp_optimizer.fp32_params]
-        else:
-            return NotImplementedError()
-
-        optimizer = Adam(params=params, lr=lr)
-    fp_optimizer.set_optimizer(optimizer)
-    return fp_optimizer, optimizer, model
-
-
-def build_criterion(padding_idx, smoothing):
-    if smoothing == 0.0:
-        criterion = nn.CrossEntropyLoss(ignore_index=padding_idx, size_average=False)
-    else:
-        criterion = LabelSmoothing(padding_idx, smoothing)
-
-    return criterion
+logger = logging.getLogger("mlbench")
 
 
 def train_loop(
@@ -132,7 +62,6 @@ def train_loop(
     train_min_len, train_max_len = 0, 50
     val_min_len, val_max_len = 0, 150
     math_mode = "amp_fp16"  # One of `fp16`, `fp32` or `amp_fp16`
-    batch_first = False
     lang = {"src": "en", "trg": "de"}
 
     # Model attributes
@@ -206,12 +135,11 @@ def train_loop(
         hidden_size=hidden_size,
         num_layers=num_layers,
         dropout=dropout,
-        batch_first=batch_first,
         share_embedding=share_embedding,
     )
 
     # Build loss function
-    loss_function = build_criterion(config.PAD, smoothing)
+    loss_function = build_criterion(wmt14_config.PAD, smoothing)
 
     # Bilingual Evaluation Understudy Score
     metrics = [BLEUScore()]
@@ -220,7 +148,7 @@ def train_loop(
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
     val_set = partition_dataset_by_rank(val_set, rank, world_size)
 
-    collate_fn = build_collate_fn(batch_first=batch_first, sort=True)
+    collate_fn = build_collate_fn(sort=True)
     train_loader = DataLoader(
         train_set,
         batch_size=train_batch_size,
@@ -250,9 +178,15 @@ def train_loop(
         model = model.cuda()
         loss_function = loss_function.cuda()
 
-    use_horovod = True  # math_mode == "fp16" and dist.get_backend() == dist.Backend.MPI
+    use_horovod = (
+        math_mode == "fp16" or math_mode == "amp_fp16"
+    ) and dist.get_backend() == dist.Backend.MPI
     if use_horovod:
         hvd.init()
+        logger.info("Using horovod rank={}".format(hvd.rank()))
+        tensor = torch.tensor([1])
+        res = hvd.allreduce(tensor, op=hvd.Sum)
+        assert res[0] == world_size
 
     fp_optimizer, optimizer, model = build_optimizer(
         model=model,
@@ -273,29 +207,12 @@ def train_loop(
     # Translator
     translator = Translator(
         model=model,
-        batch_first=batch_first,
         trg_tokenizer=tokenizer,
         beam_size=beam_size,
         len_norm_factor=len_norm_factor,
         len_norm_const=len_norm_const,
         cov_penalty_factor=cov_penalty_factor,
         max_seq_len=max_seq_len,
-    )
-
-    # Trainer
-    trainer = GNMTTrainer(
-        model=model,
-        batch_first=batch_first,
-        criterion=loss_function,
-        fp_optimizer=fp_optimizer,
-        scheduler=scheduler,
-        translator=translator,
-        rank=rank,
-        schedule_per="batch",
-        tracker=None,
-        metrics=metrics,
-        iter_size=train_iter_size,
-        use_cuda=use_cuda,
     )
 
     checkpointer = Checkpointer(
@@ -309,21 +226,100 @@ def train_loop(
         else:
             goal = task4_time_to_bleu_goal(20)
 
+        num_batches_per_device_train = len(train_loader)
         tracker = Tracker(metrics, run_id, rank, goal=goal)
 
-        trainer.set_tracker(tracker)
         dist.barrier()
         tracker.start()
 
         for epoch in range(0, train_epochs):
-            trainer.train_round(
-                train_loader,
-                val_loader=val_loader,
-                bleu_score=True,
-                validate_every=validate_every,
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            model.train()
+            tracker.train()
+            for batch_idx, (data, target) in enumerate(train_loader):
+                data, target = prepare_batch(data, target, use_cuda=use_cuda)
+                update = (batch_idx % train_iter_size) == train_iter_size - 1
+                init = (batch_idx % train_iter_size) == 0
+                tracker.batch_start()
+
+                # Clear gradients in the optimizer.
+                if init:
+                    fp_optimizer.zero_grad()
+                    tracker.record_batch_init()
+
+                # Compute the output
+                output = compute_model_output(model, data, target)
+                tracker.record_batch_fwd_pass()
+
+                # Compute the loss
+                loss, loss_per_token = compute_loss(
+                    data, target, output, loss_function, train_iter_size
+                )
+                tracker.record_batch_comp_loss()
+                # Backprop
+                fp_optimizer.backward_loss(loss)
+                tracker.record_batch_backprop()
+
+                # Opt step
+                if update:
+                    updated = fp_optimizer.step()
+                    tracker.record_batch_opt_step()
+                    # Learning rate scheduler
+                    if updated:
+                        scheduler.step()
+
+                tracker.batch_end()
+
+                record_train_batch_stats(
+                    batch_idx=batch_idx,
+                    loss=loss_per_token,
+                    output=target[0],  # Use target just for the size
+                    target=None,
+                    metrics=[],
+                    tracker=tracker,
+                    num_batches_per_device_train=num_batches_per_device_train,
+                )
+
+                # Validation during training
+                if (batch_idx + 1) % validate_every == 0:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                    metrics_values, loss = validation_round(
+                        val_loader,
+                        metrics,
+                        model,
+                        loss_function,
+                        train_iter_size,
+                        translator,
+                        tracker=tracker,
+                        use_cuda=use_cuda,
+                    )
+
+                    record_validation_stats(metrics_values, loss, tracker, rank)
+                    if tracker.goal_reached:
+                        break
+
+                    model.train()
+                    tracker.train()
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            metrics_values, loss = validation_round(
+                val_loader,
+                metrics,
+                model,
+                loss_function,
+                train_iter_size,
+                translator,
+                use_cuda=use_cuda,
             )
 
-            is_best = trainer.validation_round(val_loader)
+            is_best = record_validation_stats(metrics_values, loss, tracker, rank)
+
             checkpointer.save(
                 tracker,
                 model,

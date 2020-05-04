@@ -10,9 +10,10 @@ FROM mlbench/mlbench-pytorch-base:pytorch-v1.4.0
 RUN git clone https://github.com/NVIDIA/apex && cd apex && \
     pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./ && \
     cd ..
+
 # Horovod
 RUN HOROVOD_GPU_ALLREDUCE=MPI HOROVOD_GPU_BROADCAST=MPI \
-    HOROVOD_HIERARCHICAL_ALLREDUCE=1 HOROVOD_WITH_PYTORCH=1\
+    HOROVOD_WITH_PYTORCH=1\
     HOROVOD_WITH_MPI=1\
     pip install --no-cache-dir horovod
 
@@ -23,7 +24,10 @@ ADD ./requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
 RUN mkdir /codes
+RUN mkdir /codes/utils
+
 ADD ./main.py /codes/main.py
+ADD ./utils/* /codes/utils/
 
 ENV PYTHONPATH /codes
 
