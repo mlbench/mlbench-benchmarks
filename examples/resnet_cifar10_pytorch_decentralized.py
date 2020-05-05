@@ -8,7 +8,7 @@ import argparse
 import json
 import os
 
-from mlbench_core.controlflow.pytorch import TrainValidation
+from mlbench_core.controlflow.pytorch.train_validation import TrainValidation
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import CheckpointsEvaluationControlFlow
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
