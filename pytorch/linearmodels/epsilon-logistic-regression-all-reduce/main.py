@@ -12,20 +12,25 @@ import os
 import time
 
 import torch.distributed as dist
-from mlbench_core.controlflow.pytorch import train_round, validation_round
+from mlbench_core.controlflow.pytorch import (
+    prepare_batch,
+    record_train_batch_stats,
+    record_validation_stats,
+    validation_round,
+)
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
     CheckpointsEvaluationControlFlow,
 )
 from mlbench_core.dataset.linearmodels.pytorch.dataloader import LMDBDataset
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import (
-    task2_time_to_accuracy_light_goal,
     task2_time_to_accuracy_goal,
+    task2_time_to_accuracy_light_goal,
 )
 from mlbench_core.evaluation.pytorch.criterion import BCELossRegularized
 from mlbench_core.evaluation.pytorch.metrics import (
-    F1Score,
     DiceCoefficient,
+    F1Score,
     TopKAccuracy,
 )
 from mlbench_core.lr_scheduler.pytorch.lr import SQRTTimeDecayLR
@@ -33,8 +38,7 @@ from mlbench_core.models.pytorch.linear_models import LogisticRegression
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
-from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
-from mlbench_core.utils.pytorch.checkpoint import Checkpointer
+from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
 from torch.utils.data import DataLoader
 
 
@@ -58,6 +62,7 @@ def train_loop(
     alpha = 200
     l1_coef = 0.0
     l2_coef = 0.0000025  # Regluarization 1 / train_size ( 1 / 400,000)
+    dtype = "fp32"
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -122,40 +127,79 @@ def train_loop(
         else:
             goal = task2_time_to_accuracy_goal()
 
+        num_batches_per_device_train = len(train_loader)
         tracker = Tracker(metrics, run_id, rank, goal=goal)
 
         dist.barrier()
-
         tracker.start()
 
         for epoch in range(0, train_epochs):
-            train_round(
-                train_loader,
-                model,
-                optimizer,
-                loss_function,
-                metrics,
-                scheduler,
-                "fp32",
-                schedule_per="epoch",
-                transform_target_type=None,
-                use_cuda=use_cuda,
-                max_batch_per_epoch=max_batch_per_epoch,
+            # Set tracker and model in training mode
+            model.train()
+            tracker.train()
+
+            for batch_idx, (data, target) in enumerate(train_loader):
+                data, target = prepare_batch(
+                    data,
+                    target,
+                    dtype=dtype,
+                    transform_target_dtype=False,
+                    use_cuda=use_cuda,
+                )
+
+                tracker.batch_start()
+
+                # Clear gradients in the optimizer.
+                optimizer.zero_grad()
+                tracker.record_batch_init()
+
+                # Compute the output
+                output = model(data)
+                tracker.record_batch_fwd_pass()
+
+                # Compute the loss
+                loss = loss_function(output, target)
+                tracker.record_batch_comp_loss()
+
+                # Backprop
+                loss.backward()
+                tracker.record_batch_backprop()
+
+                # Aggregate gradients/parameters from all workers and apply updates to model
+                optimizer.step()
+                tracker.record_batch_opt_step()
+
+                tracker.batch_end()
+
+                record_train_batch_stats(
+                    batch_idx,
+                    loss.item(),
+                    output,
+                    target,
+                    metrics,
+                    tracker,
+                    num_batches_per_device_train,
+                )
+
+            # Scheduler per epoch
+            scheduler.step()
+
+            # Perform validation and gather results
+            metrics_values, loss = validation_round(
+                val_loader,
+                model=model,
+                loss_function=loss_function,
+                metrics=metrics,
+                dtype=dtype,
                 tracker=tracker,
+                transform_target_type=False,
+                use_cuda=use_cuda,
+                max_batches=max_batch_per_epoch,
             )
 
-            is_best = validation_round(
-                val_loader,
-                model,
-                loss_function,
-                metrics,
-                run_id,
-                rank,
-                "fp32",
-                transform_target_type=None,
-                use_cuda=use_cuda,
-                max_batch_per_epoch=max_batch_per_epoch,
-                tracker=tracker,
+            # Record validation stats
+            is_best = record_validation_stats(
+                metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
             )
 
             checkpointer.save(
