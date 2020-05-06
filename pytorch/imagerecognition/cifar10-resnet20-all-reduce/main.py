@@ -13,24 +13,29 @@ import json
 import os
 import time
 
-import torch.distributed as dist
-from mlbench_core.controlflow.pytorch import train_round, validation_round
+from mlbench_core.controlflow.pytorch import (
+    prepare_batch,
+    record_train_batch_stats,
+    record_validation_stats,
+    validation_round,
+)
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
     CheckpointsEvaluationControlFlow,
 )
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import (
-    task1_time_to_accuracy_light_goal,
     task1_time_to_accuracy_goal,
+    task1_time_to_accuracy_light_goal,
 )
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
-from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
-from mlbench_core.utils.pytorch.checkpoint import Checkpointer
+from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
+
+import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.data import DataLoader
@@ -51,12 +56,15 @@ def train_loop(
     max_batch_per_epoch = None
     train_epochs = 164
     batch_size = 128
+    dtype = "fp32"
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
+    # Create Model
     model = ResNetCIFAR(resnet_size=20, bottleneck=False, num_classes=10, version=1)
 
+    # Create optimizer
     optimizer = CentralizedSGD(
         world_size=world_size,
         model=model,
@@ -81,6 +89,7 @@ def train_loop(
     # Metrics like Top 1/5 Accuracy
     metrics = [TopKAccuracy(topk=1), TopKAccuracy(topk=5)]
 
+    # Create train/validation sets and loaders
     train_set = CIFAR10V1(dataset_dir, train=True, download=True)
     val_set = CIFAR10V1(dataset_dir, train=False, download=True)
 
@@ -115,6 +124,8 @@ def train_loop(
         else:
             goal = task1_time_to_accuracy_goal()
 
+        num_batches_per_device_train = len(train_loader)
+
         tracker = Tracker(metrics, run_id, rank, goal=goal)
 
         dist.barrier()
@@ -122,33 +133,72 @@ def train_loop(
         tracker.start()
 
         for epoch in range(0, train_epochs):
-            train_round(
-                train_loader,
-                model,
-                optimizer,
-                loss_function,
-                metrics,
-                scheduler,
-                "fp32",
-                schedule_per="epoch",
-                transform_target_type=None,
-                use_cuda=use_cuda,
-                max_batch_per_epoch=max_batch_per_epoch,
+            # Set tracker and model in training mode
+            model.train()
+            tracker.train()
+
+            for batch_idx, (data, target) in enumerate(train_loader):
+                data, target = prepare_batch(
+                    data,
+                    target,
+                    dtype=dtype,
+                    transform_target_dtype=False,
+                    use_cuda=use_cuda,
+                )
+
+                tracker.batch_start()
+
+                # Clear gradients in the optimizer.
+                optimizer.zero_grad()
+                tracker.record_batch_init()
+
+                # Compute the output
+                output = model(data)
+                tracker.record_batch_fwd_pass()
+
+                # Compute the loss
+                loss = loss_function(output, target)
+                tracker.record_batch_comp_loss()
+
+                # Backprop
+                loss.backward()
+                tracker.record_batch_backprop()
+
+                # Aggregate gradients/parameters from all workers and apply updates to model
+                optimizer.step()
+                tracker.record_batch_opt_step()
+
+                tracker.batch_end()
+
+                record_train_batch_stats(
+                    batch_idx,
+                    loss.item(),
+                    output,
+                    target,
+                    metrics,
+                    tracker,
+                    num_batches_per_device_train,
+                )
+
+            # Scheduler per epoch
+            scheduler.step()
+
+            # Perform validation and gather results
+            metrics_values, loss = validation_round(
+                val_loader,
+                model=model,
+                loss_function=loss_function,
+                metrics=metrics,
+                dtype=dtype,
                 tracker=tracker,
+                transform_target_type=False,
+                use_cuda=use_cuda,
+                max_batches=max_batch_per_epoch,
             )
 
-            is_best = validation_round(
-                val_loader,
-                model,
-                loss_function,
-                metrics,
-                run_id,
-                rank,
-                "fp32",
-                transform_target_type=None,
-                use_cuda=use_cuda,
-                max_batch_per_epoch=max_batch_per_epoch,
-                tracker=tracker,
+            # Record validation stats
+            is_best = record_validation_stats(
+                metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
             )
 
             checkpointer.save(

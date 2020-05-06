@@ -16,7 +16,7 @@ from torchvision import datasets, transforms
 from mlbench_core.utils import Tracker
 from mlbench_core.evaluation.goals import task1_time_to_accuracy_goal
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
-from mlbench_core.controlflow.pytorch import validation_round
+from mlbench_core.controlflow.pytorch import validation_round, record_validation_stats
 
 import logging
 
@@ -186,9 +186,10 @@ def run(rank, size, run_id):
                       dist.get_rank(), epoch,
                       epoch_loss / num_batches)
 
-        validation_round(val_set, model, loss_func, metrics, run_id, rank,
-                         'fp32', transform_target_type=None, use_cuda=False,
-                         max_batch_per_epoch=num_batches_val, tracker=tracker)
+        metrics, loss = validation_round(val_set, model, loss_func, metrics, "fp32",
+                                         tracker=tracker, transform_target_type=False,
+                                         use_cuda=False, max_batches=num_batches_val)
+        record_validation_stats(metrics, loss, tracker=tracker, rank=rank)
 
         tracker.epoch_end()
 
