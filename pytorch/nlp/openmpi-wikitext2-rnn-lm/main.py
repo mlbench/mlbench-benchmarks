@@ -11,7 +11,7 @@ import time
 import os
 import logging
 
-from mlbench_core.controlflow.pytorch import train_round, validation_round
+from mlbench_core.controlflow.pytorch import record_train_batch_stats, validation_round
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.dataset.nlp.pytorch import BPTTWikiText2
 from mlbench_core.evaluation.pytorch.metrics import Perplexity
@@ -23,8 +23,7 @@ from mlbench_core.evaluation.goals import (
     task3_time_to_preplexity_light_goal,
     task3_time_to_preplexity_goal,
 )
-from mlbench_core.lr_scheduler.pytorch.lr import \
-    MultistepLearningRatesWithWarmup
+from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
 
 import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
@@ -44,31 +43,35 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
-    by_layer=False
+    by_layer=False,
 ):
     """Train loop"""
     num_parallel_workers = 2
     max_batch_per_epoch = None
     train_epochs = 164
     batch_size = 128
-    rnn_n_hidden = 650
+    rnn_n_hidden = 1000
     rnn_n_layers = 3
     rnn_tie_weights = True
-    rnn_clip = 0.4
-    drop_rate = 0.4
+    rnn_clip = 0.25
+    drop_rate = 0.1
     rnn_weight_norm = False
     bptt_len = 30
-    lr = 1.0
+    lr = 0.001
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
     tokenizer = get_tokenizer("spacy")
-    train_set = BPTTWikiText2(bptt_len, train=True, tokenizer=tokenizer, root=dataset_dir)
+    train_set = BPTTWikiText2(
+        bptt_len, train=True, tokenizer=tokenizer, root=dataset_dir
+    )
     vocab = train_set.get_vocab()
     print(next(iter(train_set)))
 
-    val_set = BPTTWikiText2(bptt_len, train=False, tokenizer=tokenizer, root=dataset_dir)
+    val_set = BPTTWikiText2(
+        bptt_len, train=False, tokenizer=tokenizer, root=dataset_dir
+    )
 
     train_set = partition_dataset_by_rank(train_set, rank, world_size, shuffle=False)
     val_set = partition_dataset_by_rank(val_set, rank, world_size, shuffle=False)
@@ -79,7 +82,8 @@ def train_loop(
         shuffle=False,
         num_workers=num_parallel_workers,
         pin_memory=use_cuda,
-        drop_last=True)
+        drop_last=True,
+    )
 
     val_loader = DataLoader(
         val_set,
@@ -87,7 +91,8 @@ def train_loop(
         shuffle=False,
         num_workers=num_parallel_workers,
         pin_memory=use_cuda,
-        drop_last=True)
+        drop_last=True,
+    )
 
     n_tokens, emb_size = len(vocab), rnn_n_hidden
 
@@ -99,7 +104,7 @@ def train_loop(
         tie_weights=rnn_tie_weights,
         dropout=drop_rate,
         weight_norm=rnn_weight_norm,
-        batch_first=True
+        batch_first=True,
     )
 
     optimizer = CentralizedSGD(
@@ -110,7 +115,7 @@ def train_loop(
         weight_decay=1e-4,
         nesterov=False,
         use_cuda=use_cuda,
-        by_layer=by_layer
+        by_layer=by_layer,
     )
 
     # Create a learning rate scheduler for an optimizer
@@ -147,23 +152,65 @@ def train_loop(
     tracker.start()
 
     for epoch in range(0, train_epochs):
-        train_round(
-            train_loader,
-            model,
-            optimizer,
-            loss_function,
-            metrics,
-            scheduler,
-            "int64",
-            schedule_per="epoch",
-            transform_target_type=None,
-            use_cuda=use_cuda,
-            max_batch_per_epoch=max_batch_per_epoch,
-            init_hidden=lambda: model.init_hidden(batch_size),
-            package_hidden=lambda h: model.repackage_hidden(h),
-            transform_parameters=lambda m: clip_grad_norm_(m.parameters(), rnn_clip),
-            tracker=tracker,
-        )
+        model.train()
+
+        tracker.train()
+
+        hidden = model.init_hidden(batch_size)
+        num_batches_per_device_train = len(train_loader)
+
+        for batch_idx, (data, target) in enumerate(train_loader):
+            if tracker:
+                tracker.batch_start()
+
+            if hidden:
+                hidden = model.repackage_hidden(hidden)
+
+            # Clear gradients in the optimizer.
+            optimizer.zero_grad()
+            if tracker:
+                tracker.record_batch_step("init")
+
+            # Compute the output
+            if hidden:
+                output, hidden = model(data, hidden)
+            else:
+                output = model(data)
+
+            if tracker:
+                tracker.record_batch_step("fwd_pass")
+
+            # Compute the loss
+            loss = loss_function(output, target)
+            if tracker:
+                tracker.record_batch_step("comp_loss")
+
+            # Backprop
+            loss.backward()
+            if tracker:
+                tracker.record_batch_step("backprop")
+
+            # Aggregate gradients/parameters from all workers and apply updates to model
+            clip_grad_norm_(model.parameters(), rnn_clip)
+
+            optimizer.step()
+
+            tracker.record_batch_step("opt_step")
+
+            if tracker:
+                tracker.batch_end()
+
+            record_train_batch_stats(
+                batch_idx=batch_idx,
+                loss=loss.item(),
+                output=output,
+                target=target,
+                metrics=metrics,
+                tracker=tracker,
+                num_batches_per_device_train=num_batches_per_device_train,
+            )
+
+        scheduler.step()
 
         validation_round(
             val_loader,
