@@ -11,7 +11,7 @@ MLBench contains several benchmark tasks and implementations. Tasks combinations
 For an overview of MLBench tasks, please refer to the :doc:`Benchmarking Tasks Section <mlbench-docs:benchmark-tasks>`
 
 
-Closed Division Benchmark Implementations
+Benchmark Implementations
 -----------------------------------------
 
 A Benchmark Implementation is a model with fixed hyperparameters that solves a Benchmark Task.
