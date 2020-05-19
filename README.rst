@@ -14,7 +14,7 @@ mlbench Benchmarks: Distributed Machine Learning Benchmark
 
 A public and reproducible collection of reference implementations and benchmark suite for distributed machine learning algorithms, frameworks and systems.
 
-This repository contains the implementations for the various benchmark tasks for the closed division of mlbench.
+This repository contains the implementations for the various benchmark tasks in mlbench.
 
 
 * Project website: https://mlbench.github.io/
