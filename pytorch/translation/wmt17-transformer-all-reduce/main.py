@@ -127,9 +127,9 @@ def train_loop(
         "scale_window": 2000,
     }
 
-    criterion_args = {"smoothing": 0.1, "fast_xentropy": True}  # Should be true
+    criterion_args = {"smoothing": 0.1, "fast_xentropy": True}
 
-    # Horovod stufff
+    # Horovod stuff
     use_horovod = (math_mode == "fp16") and dist.get_backend() == dist.Backend.MPI
     if use_horovod:
         hvd.init()
@@ -153,7 +153,7 @@ def train_loop(
     validation_set = WMT17Dataset(
         dataset_dir,
         download=False,
-        validation=True,
+        test=True,
         shuffle=True,
         lang=lang,
         left_pad=left_pad,
@@ -179,7 +179,7 @@ def train_loop(
 
     validate_every = update_freq * round(
         len(train_batches) * 0.30 / update_freq
-    )  # Validate every 20%
+    )  # Validate every 30%
 
     assert (validate_every % update_freq) == 0
     logger.info(
