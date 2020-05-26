@@ -10,67 +10,89 @@ import os
 import time
 from copy import deepcopy
 
+import numpy as np
 import torch
 import torch.distributed as dist
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
-    CheckpointsEvaluationControlFlow,
-)
-from mlbench_core.controlflow.pytorch.controlflow import record_train_batch_stats
-from mlbench_core.dataset.nlp.pytorch import get_batches, WMT17Dataset
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
+    CheckpointsEvaluationControlFlow
+from mlbench_core.controlflow.pytorch.controlflow import (
+    record_train_batch_stats, record_validation_stats)
+from mlbench_core.dataset.nlp.pytorch import WMT17Dataset, get_batches
+from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
+from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
 from mlbench_core.evaluation.pytorch.criterion import LabelSmoothing
+from mlbench_core.evaluation.pytorch.metrics import BLEUScore
 from mlbench_core.lr_scheduler.pytorch.lr import SQRTTimeDecayLRWithWarmup
-from mlbench_core.models.pytorch.transformer import TransformerModel
+from mlbench_core.models.pytorch.transformer import (SequenceGenerator,
+                                                     TransformerModel)
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-from mlbench_core.utils.pytorch.sequence_generator import SequenceGenerator
 from torch.utils.data import DataLoader
-from mlbench_core.evaluation.pytorch.metrics import BLEUScore
-from utils import compute_loss, get_full_batch_size, build_optimizer, opt_step, Arguments, prepare_batch
-from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
+
+from utils import (Arguments, build_optimizer, compute_loss,
+                   get_full_batch_size, opt_step, prepare_batch,
+                   validation_round)
+
 try:
     import horovod.torch as hvd
 except ImportError as e:
     hvd = None
 
+
+def equalize_batches(batches, world_size, seed):
+    to_add = world_size - (len(batches) % world_size)
+    if to_add == 0:
+        return batches
+    np.random.seed(seed)
+    bootstrapped = np.random.choice(np.arange(len(batches)), size=to_add)
+
+    to_add = [batches[i] for i in bootstrapped]
+    return batches + to_add
+
+
 logger = logging.getLogger("mlbench")
 
 DEFAULT_TRANSFORMER_ARCH = {
-        "max_source_positions": 256,
-        "max_target_positions": 256,
-        "dropout": 0.3,
-        "attention_dropout": 0.1,
-        "relu_dropout": 0.1,
-        "encoder_embed_path": None,
-        "encoder_embed_dim": 1024,
-        "encoder_ffn_embed_dim": 4096,
-        "encoder_layers": 6,
-        "encoder_attention_heads": 16,
-        "encoder_normalize_before": True,
-        "encoder_learned_pos": False,
-        "decoder_embed_path": None,
-        "decoder_embed_dim": 1024,
-        "decoder_ffn_embed_dim": 4096,
-        "decoder_layers": 6,
-        "decoder_attention_heads": 16,
-        "decoder_learned_pos": False,
-        "decoder_normalize_before": True,
-        "share_decoder_input_output_embed": False,
-        "share_all_embeddings": False,
-        "no_token_positional_embeddings": False,
-        "softmax_type": None
-    }
+    "max_source_positions": 256,
+    "max_target_positions": 256,
+    "dropout": 0.3,
+    "attention_dropout": 0.1,
+    "relu_dropout": 0.1,
+    "encoder_embed_path": None,
+    "encoder_embed_dim": 1024,
+    "encoder_ffn_embed_dim": 4096,
+    "encoder_layers": 6,
+    "encoder_attention_heads": 16,
+    "encoder_normalize_before": True,
+    "encoder_learned_pos": False,
+    "decoder_embed_path": None,
+    "decoder_embed_dim": 1024,
+    "decoder_ffn_embed_dim": 4096,
+    "decoder_layers": 6,
+    "decoder_attention_heads": 16,
+    "decoder_learned_pos": False,
+    "decoder_normalize_before": True,
+    "share_decoder_input_output_embed": False,
+    "share_all_embeddings": False,
+    "no_token_positional_embeddings": False,
+    "softmax_type": None,
+}
+
+
+def get_max_tokens(world_size, update_freq, max_tokens_batch=2 ** 17):
+    return int(max_tokens_batch / (world_size * update_freq))
 
 
 def train_loop(
-        run_id,
-        dataset_dir,
-        ckpt_run_dir,
-        output_dir,
-        validation_only=False,
-        use_cuda=False,
-        light_target=False,
-        seed=42
+    run_id,
+    dataset_dir,
+    ckpt_run_dir,
+    output_dir,
+    validation_only=False,
+    use_cuda=False,
+    light_target=False,
+    seed=42,
 ):
     """Train loop"""
     train_epochs = 10
@@ -80,43 +102,32 @@ def train_loop(
     world_size = dist.get_world_size()
 
     # Dataset arguments
-    max_tokens = 8192
+    update_freq = max(16 // world_size, 1)
+    max_tokens = get_max_tokens(world_size, update_freq)
     max_source_positions, max_target_positions = 80, 80
-    update_freq = 16 // world_size
     seq_len_multiple = 2
     left_pad = (True, False)
     lang = ("en", "de")
 
     # specific arch
     model_args = deepcopy(DEFAULT_TRANSFORMER_ARCH)
-    model_args['max_source_positions'] = max_source_positions
-    model_args['max_target_positions'] = max_target_positions
-    model_args['share_all_embeddings'] = True
-    model_args['dropout'] = 0.1
-    # model_args['softmax_type'] = "fast_fill"
+    model_args["max_source_positions"] = max_source_positions
+    model_args["max_target_positions"] = max_target_positions
+    model_args["share_all_embeddings"] = True
+    model_args["dropout"] = 0.1
+    model_args["softmax_type"] = "fast_fill"
 
     lr = 1.976e-3
-    optimizer_args = {
-        "lr": lr,
-        "eps": 1e-9,
-        "betas": (0.9, 0.98)
-    }
-    scheduler_args = {
-        "base_lr": lr,
-        "warmup_init_lr": 0.0,
-        "warmup_steps": 1000
-    }
+    optimizer_args = {"lr": lr, "eps": 1e-9, "betas": (0.9, 0.98)}
+    scheduler_args = {"base_lr": lr, "warmup_init_lr": 0.0, "warmup_steps": 1000}
 
     loss_scaling_fp16 = {
-        "init_scale": 2. ** 7,
+        "init_scale": 2.0 ** 7,
         "scale_factor": 2,
-        "scale_window": 2000
+        "scale_window": 2000,
     }
 
-    criterion_args = {
-        "smoothing": 0.1,
-        "fast_xentropy": True  # Should be true
-    }
+    criterion_args = {"smoothing": 0.1, "fast_xentropy": True}  # Should be true
 
     # Horovod stufff
     use_horovod = (math_mode == "fp16") and dist.get_backend() == dist.Backend.MPI
@@ -137,7 +148,6 @@ def train_loop(
         left_pad=left_pad,
         max_positions=(max_source_positions, max_target_positions),
         seq_len_multiple=seq_len_multiple,
-        seed=seed
     )
 
     validation_set = WMT17Dataset(
@@ -149,33 +159,50 @@ def train_loop(
         left_pad=left_pad,
         max_positions=(max_source_positions, max_target_positions),
         seq_len_multiple=seq_len_multiple,
-        seed=seed
     )
     src_dict, trg_dict = train_set.src_dict, train_set.trg_dict
 
-    # Partition by rank
-    train_partition = partition_dataset_by_rank(train_set, rank, world_size)
-    validation_partition = partition_dataset_by_rank(validation_set, rank, world_size)
+    train_batches = get_batches(
+        train_set, max_tokens=max_tokens, bsz_mult=8, shuffle=True, seed=seed
+    )
+    val_batches = get_batches(
+        validation_set, max_tokens=max_tokens, bsz_mult=8, shuffle=False
+    )
 
-    train_batches = get_batches(train_partition, max_tokens=max_tokens, bsz_mult=8, shuffle=True, seed=seed)
-    val_batches = get_batches(validation_partition, max_tokens=max_tokens, bsz_mult=8)
+    train_batches = equalize_batches(train_batches, world_size, seed=seed)
+
+    # Partition by rank
+    train_batches = partition_dataset_by_rank(train_batches, rank, world_size)
+    val_batches = partition_dataset_by_rank(val_batches, rank, world_size)
 
     total_train_points = sum(len(b) for b in train_batches)
 
-    validate_every = int(len(train_batches) * 0.05)  # Validate every 20%
-    logger.info("Using {} total train points, {} batches".format(total_train_points, len(train_batches)))
+    validate_every = update_freq * round(
+        len(train_batches) * 0.30 / update_freq
+    )  # Validate every 20%
 
-    train_loader = DataLoader(train_set,
-                              num_workers=1,
-                              pin_memory=False,
-                              collate_fn=train_set.collater,
-                              batch_sampler=train_batches)
+    assert (validate_every % update_freq) == 0
+    logger.info(
+        "Using {} total train points, {} batches".format(
+            total_train_points, len(train_batches)
+        )
+    )
 
-    val_loader = DataLoader(validation_set,
-                            num_workers=1,
-                            pin_memory=False,
-                            collate_fn=validation_set.collater,
-                            batch_sampler=val_batches)
+    train_loader = DataLoader(
+        train_set,
+        num_workers=1,
+        pin_memory=False,
+        collate_fn=train_set.collater,
+        batch_sampler=train_batches,
+    )
+
+    val_loader = DataLoader(
+        validation_set,
+        num_workers=1,
+        pin_memory=False,
+        collate_fn=validation_set.collater,
+        batch_sampler=val_batches,
+    )
 
     model = TransformerModel(Arguments(model_args), src_dict, trg_dict)
     criterion = LabelSmoothing(padding_idx=src_dict.pad(), **criterion_args)
@@ -183,36 +210,43 @@ def train_loop(
     if use_cuda:
         model = model.cuda()
         criterion = criterion.cuda()
-    fp_optimizer, optimizer, model = build_optimizer(model, optimizer_args, loss_scaling_fp16,
-                                                     math_mode=math_mode, use_horovod=use_horovod, use_cuda=use_cuda)
+    fp_optimizer, optimizer, model = build_optimizer(
+        model,
+        optimizer_args,
+        loss_scaling_fp16,
+        math_mode=math_mode,
+        use_horovod=use_horovod,
+        use_cuda=use_cuda,
+    )
 
     scheduler = SQRTTimeDecayLRWithWarmup(optimizer, **scheduler_args)
 
-    metrics = [BLEUScore()]
+    metrics = [BLEUScore(use_raw=True)]
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.BEST
     )
 
-    translator = SequenceGenerator([model],
-                                   src_dict=deepcopy(src_dict),
-                                   trg_dict=deepcopy(trg_dict),
-                                   beam_size=4,
-                                   stop_early=True,
-                                   normalize_scores=True,
-                                   len_penalty=0.6,
-                                   sampling=False,
-                                   sampling_topk=-1,
-                                   minlen=1)
-
+    translator = SequenceGenerator(
+        model,
+        src_dict=deepcopy(src_dict),
+        trg_dict=deepcopy(trg_dict),
+        beam_size=4,
+        stop_early=True,
+        normalize_scores=True,
+        len_penalty=0.6,
+        sampling=False,
+        sampling_topk=-1,
+        minlen=1,
+    )
     if not validation_only:
 
-        # if light_target:
-        #     goal = task4_time_to_bleu_goal(18)
-        # else:
-        #     goal = task4_time_to_bleu_goal(20)
+        if light_target:
+            goal = task4_time_to_bleu_goal(20)
+        else:
+            goal = task4_time_to_bleu_goal(25)
 
-        num_batches_per_device_train = len(train_batches)
-        tracker = Tracker(metrics, run_id, rank, goal=None)
+        num_batches_per_device_train = len(train_loader)
+        tracker = Tracker(metrics, run_id, rank, goal=goal)
 
         dist.barrier()
         tracker.start()
@@ -226,44 +260,46 @@ def train_loop(
 
             iter_sample_size = 0
             for batch_idx, sample in enumerate(train_loader):
-                with torch.autograd.detect_anomaly():
-                    sample = prepare_batch(sample, use_cuda=use_cuda)
-                    tracker.batch_start()
+                sample = prepare_batch(sample, use_cuda=use_cuda)
+                tracker.batch_start()
 
-                    update = (batch_idx % update_freq) == update_freq -1
-                    init = (batch_idx % update_freq) == 0
-                    # Clear gradients in the optimizer.
-                    if init:
-                        fp_optimizer.zero_grad()
-                        iter_sample_size = 0
-                        tracker.record_batch_init()
-    
-                    # Compute the output
-                    output = model(**sample['net_input'])
-                    tracker.record_batch_fwd_pass()
+                is_last = batch_idx == len(train_loader)
+                update = (batch_idx % update_freq) == update_freq - 1
+                init = (batch_idx % update_freq) == 0
+                # Clear gradients in the optimizer.
+                if init:
+                    fp_optimizer.zero_grad()
+                    iter_sample_size = 0
+                    tracker.record_batch_init()
 
-                    loss, sample_size = compute_loss(sample, output, criterion)
-                    loss_per_sample = loss.item() / sample_size
-                    iter_sample_size += sample_size
-                    tracker.record_batch_comp_loss()
+                # Compute the output
+                output = model(**sample["net_input"])
+                tracker.record_batch_fwd_pass()
 
-                    # Backprop
-                    fp_optimizer.backward_loss(loss)
-                    tracker.record_batch_backprop()
+                loss, sample_size = compute_loss(sample, output, criterion)
+                loss_per_sample = loss.item() / sample_size
+                iter_sample_size += sample_size
+                tracker.record_batch_comp_loss()
 
-                    if update:
-                        # Optimize
-                        full_bs = get_full_batch_size(iter_sample_size,
-                                                      world_size=world_size,
-                                                      use_cuda=use_cuda)
+                # Backprop
+                fp_optimizer.backward_loss(loss)
+                tracker.record_batch_backprop()
 
-                        updated = opt_step(fp_optimizer, full_bs, math_mode, world_size)
-                        tracker.record_batch_opt_step()
+                if update or is_last:
+                    # Optimize
+                    full_bs = get_full_batch_size(
+                        iter_sample_size, world_size=world_size, use_cuda=use_cuda
+                    )
 
-                        if updated:
-                            scheduler.step()
+                    updated = opt_step(
+                        fp_optimizer, full_bs, update_freq, math_mode, world_size
+                    )
+                    tracker.record_batch_opt_step()
 
-                    tracker.batch_end()
+                    if updated:
+                        scheduler.step()
+
+                tracker.batch_end()
 
                 record_train_batch_stats(
                     batch_idx=batch_idx,
@@ -272,39 +308,42 @@ def train_loop(
                     target=None,
                     metrics=[],
                     tracker=tracker,
-                    num_batches_per_device_train=num_batches_per_device_train
+                    num_batches_per_device_train=num_batches_per_device_train,
                 )
 
-                if (batch_idx +1 ) % validate_every == 0:
-                    model.eval()
-                    refs, sys = translator.get_translations(val_loader,
-                                                            maxlen_a=1, maxlen_b=50,
-                                                            use_cuda=use_cuda)
-                    score = metrics[0](None, sys, refs)
-                    logger.info("Got score {}".format(score))
+                if (batch_idx + 1) % validate_every == 0:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                    metric_values, loss = validation_round(
+                        val_loader,
+                        metrics,
+                        criterion,
+                        translator,
+                        tracker=tracker,
+                        use_cuda=use_cuda,
+                    )
+                    record_validation_stats(metric_values, loss, tracker, rank)
+                    if tracker.goal_reached:
+                        break
+
                     model.train()
+                    tracker.train()
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            # metrics_values, loss = validation_round(
-            #     val_loader,
-            #     metrics,
-            #     model,
-            #     loss_function,
-            #     train_iter_size,
-            #     translator,
-            #     use_cuda=use_cuda,
-            # )
-            # Add is_best and record_validation_stats
-            is_best = False
-            # is_best = trainer.validation_round(val_loader)
+
+            metric_values, loss = validation_round(
+                val_loader,
+                metrics,
+                criterion,
+                translator,
+                tracker=tracker,
+                use_cuda=use_cuda,
+            )
+            is_best = record_validation_stats(metric_values, loss, tracker, rank)
             checkpointer.save(
-                tracker,
-                model,
-                optimizer,
-                scheduler,
-                tracker.current_epoch,
-                is_best,
+                tracker, model, optimizer, scheduler, tracker.current_epoch, is_best,
             )
 
             tracker.epoch_end()
@@ -338,29 +377,29 @@ def train_loop(
 
 
 def main(
-        run_id,
-        dataset_dir,
-        ckpt_run_dir,
-        output_dir,
-        rank,
-        backend,
-        hosts,
-        validation_only=False,
-        gpu=False,
-        light_target=False,
+    run_id,
+    dataset_dir,
+    ckpt_run_dir,
+    output_dir,
+    rank,
+    backend,
+    hosts,
+    validation_only=False,
+    gpu=False,
+    light_target=False,
 ):
     r"""Main logic."""
     with initialize_backends(
-            comm_backend=backend,
-            hosts=hosts,
-            rank=rank,
-            logging_level="INFO",
-            logging_file=os.path.join(output_dir, "mlbench.log"),
-            use_cuda=gpu,
-            seed=42,
-            cudnn_deterministic=False,
-            ckpt_run_dir=ckpt_run_dir,
-            delete_existing_ckpts=not validation_only,
+        comm_backend=backend,
+        hosts=hosts,
+        rank=rank,
+        logging_level="INFO",
+        logging_file=os.path.join(output_dir, "mlbench.log"),
+        use_cuda=gpu,
+        seed=43,
+        cudnn_deterministic=False,
+        ckpt_run_dir=ckpt_run_dir,
+        delete_existing_ckpts=not validation_only,
     ):
         train_loop(
             run_id,
@@ -370,7 +409,7 @@ def main(
             validation_only,
             use_cuda=gpu,
             light_target=light_target,
-            seed=42
+            seed=43,
         )
 
 
