@@ -1,4 +1,4 @@
-"""Training GNMT for WMT14 Dataset
+"""Training Transformer for WMT17 Dataset
 
 This implements the machine translation benchmark tasks,
 # TODO add link to docs
@@ -41,6 +41,17 @@ except ImportError as e:
 
 
 def equalize_batches(batches, world_size, seed):
+    """Given a list of batches, makes sure each workers has equal number
+    by adding new batches using bootstrap sampling
+
+    Args:
+        batches (list): The list of batches
+        world_size (int): Distributed world size
+        seed (int): Random seed to use (must be the same across all workers)
+
+    Returns:
+        (list): The new extended batches
+    """
     to_add = world_size - (len(batches) % world_size)
     if to_add == 0:
         return batches
@@ -51,7 +62,22 @@ def equalize_batches(batches, world_size, seed):
     return batches + to_add
 
 
+def get_max_tokens(world_size, update_freq, max_tokens_batch=2 ** 17):
+    """Returns the max number of tokens a batch should have
+
+    Args:
+        world_size (int): Distributed world size
+        update_freq (int): Update frequency (min 1)
+        max_tokens_batch (int): Max tokens per batch over all workers
+
+    Returns:
+        (int): The max number of tokens per batch per worker
+    """
+    return int(max_tokens_batch / (world_size * update_freq))
+
+
 logger = logging.getLogger("mlbench")
+
 
 DEFAULT_TRANSFORMER_ARCH = {
     "max_source_positions": 256,
@@ -78,10 +104,6 @@ DEFAULT_TRANSFORMER_ARCH = {
     "no_token_positional_embeddings": False,
     "softmax_type": None,
 }
-
-
-def get_max_tokens(world_size, update_freq, max_tokens_batch=2 ** 17):
-    return int(max_tokens_batch / (world_size * update_freq))
 
 
 def train_loop(
@@ -213,8 +235,8 @@ def train_loop(
     fp_optimizer, optimizer, model = build_optimizer(
         model,
         optimizer_args,
-        loss_scaling_fp16,
         math_mode=math_mode,
+        scaling_args=loss_scaling_fp16,
         use_horovod=use_horovod,
         use_cuda=use_cuda,
     )
@@ -345,7 +367,6 @@ def train_loop(
             checkpointer.save(
                 tracker, model, optimizer, scheduler, tracker.current_epoch, is_best,
             )
-
             tracker.epoch_end()
 
             if tracker.goal_reached:

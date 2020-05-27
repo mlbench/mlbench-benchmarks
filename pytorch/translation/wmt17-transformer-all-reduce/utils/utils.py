@@ -1,9 +1,9 @@
-import torch
-from apex.optimizers.fused_adam import FusedAdam
-from mlbench_core.optim.pytorch.fp_optimizers import (FP16Optimizer,
-                                                      FP32Optimizer)
+from mlbench_core.optim.pytorch.fp_optimizers import FP16Optimizer, FP32Optimizer
 from mlbench_core.utils import AverageMeter
 from mlbench_core.utils.pytorch.distributed import global_average
+
+import torch
+from apex.optimizers.fused_adam import FusedAdam
 from torch import distributed as dist
 from torch.optim import Adam
 
@@ -11,12 +11,28 @@ from torch.optim import Adam
 def build_optimizer(
     model,
     optimizer_args,
-    scaling_args,
-    math_mode,
+    math_mode="fp16",
+    scaling_args=None,
     fused_adam=False,
     use_horovod=False,
     use_cuda=False,
 ):
+    """Builds the Floating Point optimizer for Transformer. Uses Adam or FusedAdam as
+    underlying optimizer
+
+    Args:
+        model (:obj:`nn.Module`): The model
+        optimizer_args (dict): The arguments for optimizer (eps, weight_decay)
+        math_mode (str): One of `fp32` or `fp16`. Default `fp16`
+        scaling_args (dict): Arguments for loss scaling (for `float16`). Default `None`
+        fused_adam (bool): Use apex's FusedAdam instead
+        use_horovod (bool): Use horovod for communication
+        use_cuda (bool): Use CUDA tensors for communication
+
+    Returns:
+        (:obj:`FP16Optimizer` | :obj:`FP32Optimizer`, :obj:`torch.optim.Optimizer`, :obj:`nn.Module`):
+            The FPoptimizer, its underlying Adam or FusedAdam and the model
+    """
     if math_mode == "fp16":
         # Half model
         model.half()
@@ -54,15 +70,27 @@ def build_optimizer(
     return fp_optimizer, optimizer, model
 
 
-def opt_step(fp_optimizer, full_batch_size, iter_size, math_mode, world_size):
+def opt_step(fp_optimizer, full_batch_size, update_freq, math_mode, world_size):
+    """Performs one optimizer step.
+
+    Args:
+        fp_optimizer (:obj:`FP16Optimizer` | :obj:`FP32Optimizer`): The FP Optimizer
+        full_batch_size (int): The total batch size (over all batches since last update)
+        update_freq (int): The update frequency between batches
+        math_mode (str): The used math mode
+        world_size (int): Distributed world size
+
+    Returns:
+        (bool): Whether the weights were updated or not (i.e. if no overflow detected)
+    """
     if math_mode == "fp32":
         updated = fp_optimizer.step(denom=full_batch_size)
     elif math_mode == "fp16":
         # This results in reducing tensor and dividing by `loss_scale * full_batch_size`
         # but we divide by world size before reduction to avoid overflow, and
         # re-multiply after reduction to rescale
-        multiplier = full_batch_size / (world_size * iter_size)
-        denom = world_size * iter_size
+        multiplier = full_batch_size / (world_size * update_freq)
+        denom = world_size * update_freq
         updated = fp_optimizer.step(denom=denom, multiplier=multiplier)
     else:
         raise NotImplementedError("Unknown math mode {}".format(math_mode))
@@ -70,6 +98,16 @@ def opt_step(fp_optimizer, full_batch_size, iter_size, math_mode, world_size):
 
 
 def compute_loss(batch, output, loss_func):
+    """Computes the loss of a given batch
+
+    Args:
+        batch (dict): The current batch
+        output (tuple): Tuple of tensors (output of `TransformerModel`)
+        loss_func (:obj:`nn.modules._Loss`): The loss function
+
+    Returns:
+        (:obj:`torch.Tensor`, int): The computed loss and the total number of tokens in batch
+    """
     output = output[0]
     T, B = output.size(0), output.size(1)
     target = batch["target"]
@@ -79,6 +117,16 @@ def compute_loss(batch, output, loss_func):
 
 
 def get_full_batch_size(rank_ntokens, world_size=1, use_cuda=False):
+    """Returns the full batch size over all workers
+
+    Args:
+        rank_ntokens (int): Number of tokens in current worker
+        world_size (int): Distributed world size
+        use_cuda (bool): Use CUDA tensors for communication
+
+    Returns:
+        (int): The sum of all workers' batch size for current batch
+    """
     tensor = torch.tensor(
         [rank_ntokens], device=torch.device("cuda" if use_cuda else "cpu")
     )
@@ -137,6 +185,16 @@ class Arguments:
 
 
 def prepare_batch(sample, use_cuda=False):
+    """Prepares a batch for training/validation by moving it to GPU
+
+    Args:
+        sample (dict | :obj:`torch.Tensor` | list): The batch to prepare
+        use_cuda (bool): Move to cuda
+
+    Returns:
+        (dict | :obj:`torch.Tensor` | list): The batch, on GPU or CPU
+    """
+
     def _move_to_cuda(maybe_tensor):
         if torch.is_tensor(maybe_tensor):
             return maybe_tensor.cuda()

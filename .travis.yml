@@ -39,7 +39,7 @@ jobs:
         - docker
       install: true
       script:
-        - docker build -t pytorch-wmt17-transformer-all-reduce:travis-ci-test ./pytorch/translation/pytorch-wmt17-transformer-all-reduce
+        - docker build -t pytorch-wmt17-transformer-all-reduce:travis-ci-test ./pytorch/translation/wmt17-transformer-all-reduce
 
     - stage: build pytorch-openmpi-wikitext2-rnn-lm
       language: bash
