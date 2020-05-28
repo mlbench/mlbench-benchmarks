@@ -22,44 +22,52 @@ from mlbench_core.dataset.nlp.pytorch import WMT14Dataset, build_collate_fn
 from mlbench_core.dataset.nlp.pytorch.wmt14 import wmt14_config
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
+from mlbench_core.evaluation.pytorch.criterion import LabelSmoothing
 from mlbench_core.evaluation.pytorch.metrics import BLEUScore
 from mlbench_core.lr_scheduler.pytorch.lr import ExponentialWarmupMultiStepLR
-from mlbench_core.models.pytorch.gnmt import GNMT
+from mlbench_core.models.pytorch.gnmt import GNMT, Translator
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-from mlbench_core.utils.pytorch.inference import Translator
 from torch.utils.data import DataLoader
 
-import horovod.torch as hvd
 from utils import (
-    build_criterion,
     build_optimizer,
     compute_loss,
     compute_model_output,
     prepare_batch,
-    set_iter_size,
     validation_round,
 )
+
+try:
+    import horovod.torch as hvd
+except ImportError as e:
+    hvd = None
 
 logger = logging.getLogger("mlbench")
 
 
+def get_train_batch_size(global_batch_size, update_freq, world_size):
+    return int(global_batch_size / (update_freq * world_size))
+
+
 def train_loop(
-    run_id,
-    dataset_dir,
-    ckpt_run_dir,
-    output_dir,
-    validation_only=False,
-    use_cuda=False,
-    light_target=False,
+        run_id,
+        dataset_dir,
+        ckpt_run_dir,
+        output_dir,
+        validation_only=False,
+        use_cuda=False,
+        light_target=False,
 ):
     """Train loop"""
     train_epochs = 6
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    train_min_len, train_max_len = 0, 50
+    world_size = dist.get_world_size()
+
+    train_min_len, train_max_len = 0, 75
     val_min_len, val_max_len = 0, 150
     math_mode = "amp_fp16"  # One of `fp16`, `fp32` or `amp_fp16`
     lang = {"src": "en", "trg": "de"}
@@ -72,13 +80,11 @@ def train_loop(
     smoothing = 0.1
 
     # Training
-    train_batch_size = 128
-    train_global_batch_size = 1024 if dist.get_world_size() <= 8 else 2048
-    train_iter_size = set_iter_size(train_global_batch_size, train_batch_size)
+    train_global_batch_size = 2048
+    update_freq = max(16 // world_size, 1)
+    train_batch_size = get_train_batch_size(train_global_batch_size, update_freq, world_size)
     val_batch_size = 64
-    validate_every = 2048 / dist.get_world_size()
 
-    assert (validate_every % train_iter_size) == 0
     # Translator
     beam_size = 5
     len_norm_factor = 0.6
@@ -91,17 +97,19 @@ def train_loop(
     grad_clip = 5.0
 
     # Loss
-    loss_scaling = {"init_scale": 8192, "upscale_interval": 128}
+    loss_scaling = {"init_scale": 1024, "upscale_interval": 128}
 
     # Scheduler
     scheduler_config = {
         "warmup_steps": 200,
-        "remain_steps": 0.666,
-        "decay_interval": None,
+        "remain_steps": 6453,
+        "decay_interval": 809,
         "decay_steps": 4,
         "decay_factor": 0.5,
     }
 
+    # Criterion
+    criterion_args = {"smoothing": smoothing, "fast_xentropy": True}
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
@@ -139,7 +147,8 @@ def train_loop(
     )
 
     # Build loss function
-    loss_function = build_criterion(wmt14_config.PAD, smoothing)
+    criterion = LabelSmoothing(padding_idx=wmt14_config.PAD,
+                               **criterion_args)
 
     # Bilingual Evaluation Understudy Score
     metrics = [BLEUScore()]
@@ -153,7 +162,7 @@ def train_loop(
         train_set,
         batch_size=train_batch_size,
         collate_fn=collate_fn,
-        num_workers=0,
+        num_workers=1,
         pin_memory=False,
         drop_last=False,
         shuffle=True,
@@ -163,24 +172,29 @@ def train_loop(
         val_set,
         batch_size=val_batch_size,
         collate_fn=collate_fn,
-        num_workers=0,
+        num_workers=1,
         pin_memory=True,
         drop_last=False,
     )
 
+    validate_every = update_freq * round(
+        len(train_loader) * 0.30 / update_freq
+    )  # Validate every 30%
+
     # Build optimizer & scheduler
-    total_train_iters = (len(train_loader) // train_iter_size) * train_epochs
+    total_train_iters = (len(train_loader) // update_freq) * train_epochs
 
     print("Number of batches per epoch {}".format(len(train_loader)))
     print("Train iterations per epoch {}".format(total_train_iters / train_epochs))
 
     if use_cuda:
         model = model.cuda()
-        loss_function = loss_function.cuda()
+        criterion = criterion.cuda()
 
     use_horovod = (
-        math_mode == "fp16" or math_mode == "amp_fp16"
-    ) and dist.get_backend() == dist.Backend.MPI
+                          math_mode == "fp16" or math_mode == "amp_fp16"
+                  ) and dist.get_backend() == dist.Backend.MPI
+
     if use_horovod:
         hvd.init()
         logger.info("Using horovod rank={}".format(hvd.rank()))
@@ -222,9 +236,9 @@ def train_loop(
     if not validation_only:
 
         if light_target:
-            goal = task4_time_to_bleu_goal(18)
-        else:
             goal = task4_time_to_bleu_goal(20)
+        else:
+            goal = task4_time_to_bleu_goal(24)
 
         num_batches_per_device_train = len(train_loader)
         tracker = Tracker(metrics, run_id, rank, goal=goal)
@@ -240,9 +254,11 @@ def train_loop(
             tracker.train()
             for batch_idx, (data, target) in enumerate(train_loader):
                 data, target = prepare_batch(data, target, use_cuda=use_cuda)
-                update = (batch_idx % train_iter_size) == train_iter_size - 1
-                init = (batch_idx % train_iter_size) == 0
                 tracker.batch_start()
+
+                is_last = batch_idx == len(train_loader)
+                update = (batch_idx % update_freq) == update_freq - 1
+                init = (batch_idx % update_freq) == 0
 
                 # Clear gradients in the optimizer.
                 if init:
@@ -255,7 +271,7 @@ def train_loop(
 
                 # Compute the loss
                 loss, loss_per_token = compute_loss(
-                    data, target, output, loss_function, train_iter_size
+                    data, target, output, criterion, update_freq
                 )
                 tracker.record_batch_comp_loss()
                 # Backprop
@@ -263,7 +279,7 @@ def train_loop(
                 tracker.record_batch_backprop()
 
                 # Opt step
-                if update:
+                if update or is_last:
                     updated = fp_optimizer.step()
                     tracker.record_batch_opt_step()
                     # Learning rate scheduler
@@ -291,8 +307,8 @@ def train_loop(
                         val_loader,
                         metrics,
                         model,
-                        loss_function,
-                        train_iter_size,
+                        criterion,
+                        update_freq,
                         translator,
                         tracker=tracker,
                         use_cuda=use_cuda,
@@ -312,8 +328,8 @@ def train_loop(
                 val_loader,
                 metrics,
                 model,
-                loss_function,
-                train_iter_size,
+                criterion,
+                update_freq,
                 translator,
                 use_cuda=use_cuda,
             )
@@ -343,7 +359,7 @@ def train_loop(
             checkpointer=checkpointer,
             model=model,
             epochs=train_epochs,
-            loss_function=loss_function,
+            loss_function=criterion,
             metrics=metrics,
             use_cuda=use_cuda,
             dtype="fp32",
@@ -360,29 +376,29 @@ def train_loop(
 
 
 def main(
-    run_id,
-    dataset_dir,
-    ckpt_run_dir,
-    output_dir,
-    rank,
-    backend,
-    hosts,
-    validation_only=False,
-    gpu=False,
-    light_target=False,
+        run_id,
+        dataset_dir,
+        ckpt_run_dir,
+        output_dir,
+        rank,
+        backend,
+        hosts,
+        validation_only=False,
+        gpu=False,
+        light_target=False,
 ):
     r"""Main logic."""
     with initialize_backends(
-        comm_backend=backend,
-        hosts=hosts,
-        rank=rank,
-        logging_level="INFO",
-        logging_file=os.path.join(output_dir, "mlbench.log"),
-        use_cuda=gpu,
-        seed=42,
-        cudnn_deterministic=False,
-        ckpt_run_dir=ckpt_run_dir,
-        delete_existing_ckpts=not validation_only,
+            comm_backend=backend,
+            hosts=hosts,
+            rank=rank,
+            logging_level="INFO",
+            logging_file=os.path.join(output_dir, "mlbench.log"),
+            use_cuda=gpu,
+            seed=42,
+            cudnn_deterministic=False,
+            ckpt_run_dir=ckpt_run_dir,
+            delete_existing_ckpts=not validation_only,
     ):
         train_loop(
             run_id,

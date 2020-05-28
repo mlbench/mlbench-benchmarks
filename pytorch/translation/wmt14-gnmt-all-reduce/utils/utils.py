@@ -1,9 +1,7 @@
 import logging
 
 import torch
-import torch.distributed as dist
 from apex import amp
-from mlbench_core.evaluation.pytorch.criterion import LabelSmoothing
 from mlbench_core.optim.pytorch.fp_optimizers import (
     AMPOptimizer,
     FP16Optimizer,
@@ -11,30 +9,14 @@ from mlbench_core.optim.pytorch.fp_optimizers import (
 )
 from mlbench_core.utils import AverageMeter
 from mlbench_core.utils.pytorch.distributed import global_average
-from torch import nn
 from torch.optim import Adam
 
 logger = logging.getLogger("mlbench")
 LOG_EVERY_N_BATCHES = 25
 
 
-def set_iter_size(global_bs, train_bs):
-    """
-    Automatically set train_iter_size based on train_global_batch_size,
-    world_size and per-worker train_batch_size
-
-    """
-    world_size = dist.get_world_size()
-    assert global_bs % (train_bs * world_size) == 0
-    train_iter_size = global_bs // (train_bs * world_size)
-    print(
-        f"Global batch size was set, " f"Setting train_iter_size to {train_iter_size}"
-    )
-    return train_iter_size
-
-
 def build_optimizer(
-    model, math, grad_clip, loss_scaling, lr, use_cuda, world_size, use_horovod
+        model, math, grad_clip, loss_scaling, lr, use_cuda, world_size, use_horovod
 ):
     params = model.parameters()
     if math == "amp_fp16":
@@ -74,8 +56,8 @@ def build_optimizer(
                 grad_clip=grad_clip,
                 use_cuda=use_cuda,
                 use_horovod=use_horovod,
-                loss_scale=loss_scaling["init_scale"],
-                dls_upscale_interval=loss_scaling["upscale_interval"],
+                init_scale=loss_scaling["init_scale"],
+                scale_window=loss_scaling["upscale_interval"],
             )
 
             # Keep params in fp32 for optimizer
@@ -86,15 +68,6 @@ def build_optimizer(
         optimizer = Adam(params=params, lr=lr)
     fp_optimizer.set_optimizer(optimizer)
     return fp_optimizer, optimizer, model
-
-
-def build_criterion(padding_idx, smoothing):
-    if smoothing == 0.0:
-        criterion = nn.CrossEntropyLoss(ignore_index=padding_idx, size_average=False)
-    else:
-        criterion = LabelSmoothing(padding_idx, smoothing)
-
-    return criterion
 
 
 def prepare_batch(data, target, use_cuda=False):
@@ -148,14 +121,14 @@ def compute_loss(src, trg, output, loss_func, iter_size):
 
 
 def validation_round(
-    val_loader,
-    metrics,
-    model,
-    loss_func,
-    iter_size,
-    translator,
-    tracker=None,
-    use_cuda=False,
+        val_loader,
+        metrics,
+        model,
+        loss_func,
+        iter_size,
+        translator,
+        tracker=None,
+        use_cuda=False,
 ):
     # Set tracker and model in eval mode
     model.eval()

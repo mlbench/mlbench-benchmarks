@@ -1,4 +1,4 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.4.0
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.5.0
 
 # -------------------- Debug --------------------
 # RUN apt-get update && apt-get install -y vim net-tools
@@ -8,7 +8,7 @@ FROM mlbench/mlbench-pytorch-base:pytorch-v1.4.0
 #    pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./ && \
 #    cd ..
 RUN git clone https://github.com/NVIDIA/apex && cd apex && \
-    pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./ && \
+    pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--xentropy" ./ && \
     cd ..
 
 # Horovod
