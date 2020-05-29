@@ -4,6 +4,7 @@ LABEL maintainer "NVIDIA CORPORATION <cudatools@nvidia.com>"
 
 # CuDNN version that works with K80 and T4
 ENV CUDNN_VERSION 7.5.0.56
+ENV NCCL_VERSION 2.6.4
 ENV CUDA_VERSION 10.1
 LABEL com.nvidia.cudnn.version="${CUDNN_VERSION}"
 
@@ -14,6 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
             libcudnn7-dev=$CUDNN_VERSION-1+cuda$CUDA_VERSION && \
     apt-mark hold libcudnn7 && \
     rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends --allow-change-held-packages \
+        libnccl2=$NCCL_VERSION-1+cuda$CUDA_VERSION libnccl-dev=$NCCL_VERSION-1+cuda$CUDA_VERSION
+
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -92,9 +97,10 @@ ENV CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
 # Build pytorch from source
 RUN git clone --recursive https://github.com/pytorch/pytorch && \
     cd pytorch && \
-    git checkout v1.4.1 && \
+    git checkout v1.5.0 && \
     git submodule update --init --recursive && \
     TORCH_CUDA_ARCH_LIST="3.5 3.7 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
+    USE_NCCL=1 USE_SYSTEM_NCCL=1 USE_CUDNN=1 \
     CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" \
     pip install -v . && \
     rm -rf /pytorch
