@@ -18,8 +18,8 @@ from mlbench_core.controlflow.pytorch.controlflow import (
     record_train_batch_stats,
     record_validation_stats,
 )
-from mlbench_core.dataset.nlp.pytorch import WMT14Dataset, build_collate_fn
-from mlbench_core.dataset.nlp.pytorch.wmt14 import wmt14_config
+from mlbench_core.dataset.nlp.pytorch import WMT16Dataset, build_collate_fn
+from mlbench_core.dataset.nlp.pytorch.wmt16 import wmt16_config
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
 from mlbench_core.evaluation.pytorch.criterion import LabelSmoothing
@@ -35,6 +35,7 @@ from utils import (
     build_optimizer,
     compute_loss,
     compute_model_output,
+    opt_step,
     prepare_batch,
     validation_round,
 )
@@ -52,55 +53,55 @@ def get_train_batch_size(global_batch_size, update_freq, world_size):
 
 
 def train_loop(
-        run_id,
-        dataset_dir,
-        ckpt_run_dir,
-        output_dir,
-        validation_only=False,
-        use_cuda=False,
-        light_target=False,
+    run_id,
+    dataset_dir,
+    ckpt_run_dir,
+    output_dir,
+    validation_only=False,
+    use_cuda=False,
+    light_target=False,
 ):
     """Train loop"""
-    train_epochs = 6
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+    rank = dist.get_rank()
     world_size = dist.get_world_size()
 
+    train_epochs = 8
     train_min_len, train_max_len = 0, 75
     val_min_len, val_max_len = 0, 150
-    math_mode = "amp_fp16"  # One of `fp16`, `fp32` or `amp_fp16`
-    lang = {"src": "en", "trg": "de"}
-
-    # Model attributes
-    hidden_size = 1024
-    num_layers = 4
-    dropout = 0.2
-    share_embedding = True
-    smoothing = 0.1
+    math_mode = "fp16"  # One of `fp16`, `fp32` or `amp_fp16`
+    lang = ("en", "de")
 
     # Training
     train_global_batch_size = 2048
     update_freq = max(16 // world_size, 1)
-    train_batch_size = get_train_batch_size(train_global_batch_size, update_freq, world_size)
+    train_batch_size = get_train_batch_size(
+        train_global_batch_size, update_freq, world_size
+    )
     val_batch_size = 64
 
-    # Translator
-    beam_size = 5
-    len_norm_factor = 0.6
-    cov_penalty_factor = 0.1
-    len_norm_const = 5.0
-    max_seq_len = 150
+    # Model attributes
+    model_args = {
+        "hidden_size": 1024,
+        "num_layers": 4,
+        "dropout": 0.2,
+        "share_embedding": True,
+        "fusion": True,
+    }
 
-    # Optimizer
-    lr = 2.00e-3
-    grad_clip = 5.0
+    # Criterion
+    criterion_args = {"smoothing": 0.1, "fast_xentropy": True}
 
-    # Loss
+    # Loss scaling
     loss_scaling = {"init_scale": 1024, "upscale_interval": 128}
 
+    # Optimizer
+    optimizer_args = {"lr": 2.00e-3, "grad_clip": 5.0}
+
     # Scheduler
-    scheduler_config = {
+    scheduler_args = {
         "warmup_steps": 200,
         "remain_steps": 6453,
         "decay_interval": 809,
@@ -108,23 +109,28 @@ def train_loop(
         "decay_factor": 0.5,
     }
 
-    # Criterion
-    criterion_args = {"smoothing": smoothing, "fast_xentropy": True}
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
+    # Translator
+    translator_args = {
+        "beam_size": 5,
+        "len_norm_factor": 0.6,
+        "cov_penalty_factor": 0.1,
+        "len_norm_const": 5.0,
+        "max_seq_len": 150,
+    }
 
     # Build train/val datsets
-    train_set = WMT14Dataset(
+    train_set = WMT16Dataset(
         dataset_dir,
         math_precision=math_mode,
         lang=lang,
         train=True,
         download=True,
-        lazy=True,
+        preprocessed=True,
         min_len=train_min_len,
         max_len=train_max_len,
     )
-    val_set = WMT14Dataset(
+    train_set.prepare()
+    val_set = WMT16Dataset(
         dataset_dir,
         math_precision=math_mode,
         lang=lang,
@@ -135,20 +141,13 @@ def train_loop(
         sort=True,
     )
 
-    tokenizer = train_set.fields["trg"]
+    tokenizer = train_set.tokenizer
 
     # Build model
-    model = GNMT(
-        vocab_size=train_set.vocab_size,
-        hidden_size=hidden_size,
-        num_layers=num_layers,
-        dropout=dropout,
-        share_embedding=share_embedding,
-    )
+    model = GNMT(vocab_size=train_set.vocab_size, **model_args)
 
     # Build loss function
-    criterion = LabelSmoothing(padding_idx=wmt14_config.PAD,
-                               **criterion_args)
+    criterion = LabelSmoothing(padding_idx=wmt16_config.PAD, **criterion_args)
 
     # Bilingual Evaluation Understudy Score
     metrics = [BLEUScore()]
@@ -162,8 +161,8 @@ def train_loop(
         train_set,
         batch_size=train_batch_size,
         collate_fn=collate_fn,
-        num_workers=1,
-        pin_memory=False,
+        num_workers=2,
+        pin_memory=True,
         drop_last=False,
         shuffle=True,
     )
@@ -172,7 +171,7 @@ def train_loop(
         val_set,
         batch_size=val_batch_size,
         collate_fn=collate_fn,
-        num_workers=1,
+        num_workers=2,
         pin_memory=True,
         drop_last=False,
     )
@@ -192,8 +191,8 @@ def train_loop(
         criterion = criterion.cuda()
 
     use_horovod = (
-                          math_mode == "fp16" or math_mode == "amp_fp16"
-                  ) and dist.get_backend() == dist.Backend.MPI
+        math_mode == "fp16" or math_mode == "amp_fp16"
+    ) and dist.get_backend() == dist.Backend.MPI
 
     if use_horovod:
         hvd.init()
@@ -205,29 +204,20 @@ def train_loop(
     fp_optimizer, optimizer, model = build_optimizer(
         model=model,
         math=math_mode,
-        lr=lr,
-        grad_clip=grad_clip,
         loss_scaling=loss_scaling,
         use_cuda=use_cuda,
         world_size=world_size,
         use_horovod=use_horovod,
+        **optimizer_args
     )
 
     # Create a learning rate scheduler for an optimizer
     scheduler = ExponentialWarmupMultiStepLR(
-        optimizer, total_train_iters, **scheduler_config
+        optimizer, total_train_iters, **scheduler_args
     )
 
     # Translator
-    translator = Translator(
-        model=model,
-        trg_tokenizer=tokenizer,
-        beam_size=beam_size,
-        len_norm_factor=len_norm_factor,
-        len_norm_const=len_norm_const,
-        cov_penalty_factor=cov_penalty_factor,
-        max_seq_len=max_seq_len,
-    )
+    translator = Translator(model=model, trg_tokenizer=tokenizer, **translator_args)
 
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.BEST
@@ -280,7 +270,7 @@ def train_loop(
 
                 # Opt step
                 if update or is_last:
-                    updated = fp_optimizer.step()
+                    updated = opt_step(fp_optimizer, update_freq, math_mode, world_size)
                     tracker.record_batch_opt_step()
                     # Learning rate scheduler
                     if updated:
@@ -376,29 +366,29 @@ def train_loop(
 
 
 def main(
-        run_id,
-        dataset_dir,
-        ckpt_run_dir,
-        output_dir,
-        rank,
-        backend,
-        hosts,
-        validation_only=False,
-        gpu=False,
-        light_target=False,
+    run_id,
+    dataset_dir,
+    ckpt_run_dir,
+    output_dir,
+    rank,
+    backend,
+    hosts,
+    validation_only=False,
+    gpu=False,
+    light_target=False,
 ):
     r"""Main logic."""
     with initialize_backends(
-            comm_backend=backend,
-            hosts=hosts,
-            rank=rank,
-            logging_level="INFO",
-            logging_file=os.path.join(output_dir, "mlbench.log"),
-            use_cuda=gpu,
-            seed=42,
-            cudnn_deterministic=False,
-            ckpt_run_dir=ckpt_run_dir,
-            delete_existing_ckpts=not validation_only,
+        comm_backend=backend,
+        hosts=hosts,
+        rank=rank,
+        logging_level="INFO",
+        logging_file=os.path.join(output_dir, "mlbench.log"),
+        use_cuda=gpu,
+        seed=42,
+        cudnn_deterministic=False,
+        ckpt_run_dir=ckpt_run_dir,
+        delete_existing_ckpts=not validation_only,
     ):
         train_loop(
             run_id,

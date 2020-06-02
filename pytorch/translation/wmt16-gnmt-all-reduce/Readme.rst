@@ -1,4 +1,4 @@
-PyTorch WMT14 GNMT Open-MPI All-Reduce
+PyTorch WMT16 GNMT Open-MPI All-Reduce
 """""""""""""""""""""""""""""""""""""""""""
 
 GNMT implementation (adapted from https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/Translation/GNMT)
@@ -7,7 +7,7 @@ GNMT implementation (adapted from https://github.com/NVIDIA/DeepLearningExamples
 :Communication Backends: Open MPI, NCCL and GLOO
 :Distribution Algorithm: All-Reduce
 :Model: GNMT
-:Dataset: WMT14
+:Dataset: WMT16
 :GPU: Yes
 :Seed: 42
-:Image Location: mlbench/pytorch-wmt14-gnmt-all-reduce:latest
+:Image Location: mlbench/pytorch-wmt16-gnmt-all-reduce:latest

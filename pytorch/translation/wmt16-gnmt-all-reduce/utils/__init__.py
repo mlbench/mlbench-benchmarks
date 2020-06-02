@@ -1,11 +1,11 @@
 from .utils import (
     build_optimizer,
-    compute_model_output,
     compute_loss,
-    validation_round,
+    compute_model_output,
     prepare_batch,
+    validation_round,
+    opt_step
 )
-
 
 __all__ = [
     "build_optimizer",
@@ -13,4 +13,5 @@ __all__ = [
     "compute_model_output",
     "validation_round",
     "prepare_batch",
+    "opt_step"
 ]
