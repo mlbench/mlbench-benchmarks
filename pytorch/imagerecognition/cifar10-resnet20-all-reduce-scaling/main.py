@@ -60,6 +60,8 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
+    lr = (0.1 / 256) * batch_size * world_size
+
     # Create Model
     model = ResNetCIFAR(resnet_size=20, bottleneck=False, num_classes=10, version=1)
 
@@ -67,7 +69,7 @@ def train_loop(
     optimizer = CentralizedSGD(
         world_size=world_size,
         model=model,
-        lr=0.2,
+        lr=lr,
         momentum=0.9,
         weight_decay=1e-4,
         nesterov=False,
@@ -81,7 +83,7 @@ def train_loop(
         world_size=world_size,
         milestones=[82, 109],
         gamma=0.1,
-        lr=0.1,
+        lr=lr,
         warmup_duration=5,
         warmup_linear_scaling=True,
         warmup_init_lr=None,
@@ -265,7 +267,7 @@ def main(
         logging_file=os.path.join(output_dir, "mlbench.log"),
         use_cuda=gpu,
         seed=42,
-        cudnn_deterministic=False,
+        cudnn_deterministic=True,
         ckpt_run_dir=ckpt_run_dir,
         delete_existing_ckpts=not validation_only,
     ):

@@ -37,7 +37,7 @@ from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
 
 import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
-from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim.lr_scheduler import MultiStepLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 
@@ -55,11 +55,13 @@ def train_loop(
     num_parallel_workers = 2
     max_batch_per_epoch = None
     train_epochs = 164
-    batch_size = 128
+    batch_size = 256
     dtype = "fp32"
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+
+    lr = (0.1 / 256) * batch_size * world_size
 
     # Create Model
     model = ResNetCIFAR(resnet_size=20, bottleneck=False, num_classes=10, version=1)
@@ -68,16 +70,13 @@ def train_loop(
     optimizer = CentralizedSGD(
         world_size=world_size,
         model=model,
-        lr=0.1,
+        lr=lr,
         momentum=0.9,
         weight_decay=1e-4,
         nesterov=False,
         use_cuda=use_cuda,
         by_layer=by_layer,
     )
-
-    # Create a learning rate scheduler for an optimizer
-    scheduler = MultiStepLR(optimizer, milestones=[82, 109], gamma=0.1)
 
     # A loss_function for computing the loss
     loss_function = CrossEntropyLoss()
@@ -114,6 +113,12 @@ def train_loop(
         drop_last=False,
     )
 
+    # Create a learning rate scheduler for an optimizer
+    scheduler = ReduceLROnPlateau(optimizer,
+                                  patience=len(train_loader),
+                                  factor=0.1,
+                                  min_lr=lr * 1e-2,
+                                  verbose=True)
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.NONE
     )
@@ -168,6 +173,8 @@ def train_loop(
                 optimizer.step()
                 tracker.record_batch_opt_step()
 
+                scheduler.step(loss.item())
+
                 tracker.batch_end()
 
                 record_train_batch_stats(
@@ -181,7 +188,7 @@ def train_loop(
                 )
 
             # Scheduler per epoch
-            scheduler.step()
+            # scheduler.step()
 
             # Perform validation and gather results
             metrics_values, loss = validation_round(
@@ -258,7 +265,7 @@ def main(
         logging_file=os.path.join(output_dir, "mlbench.log"),
         use_cuda=gpu,
         seed=42,
-        cudnn_deterministic=False,
+        cudnn_deterministic=True,
         ckpt_run_dir=ckpt_run_dir,
         delete_existing_ckpts=not validation_only,
     ):
