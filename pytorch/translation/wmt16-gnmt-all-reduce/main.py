@@ -1,4 +1,4 @@
-"""Training GNMT for WMT14 Dataset
+"""Training GNMT for WMT16 Dataset
 
 This implements the machine translation benchmark tasks,
 # TODO add link to docs
@@ -447,7 +447,7 @@ if __name__ == "__main__":
 
     uid = "allreduce"
 
-    dataset_dir = os.path.join(args.root_dataset, "torch", "wmt14")
+    dataset_dir = os.path.join(args.root_dataset, "torch", "wmt16")
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)
     os.makedirs(dataset_dir, exist_ok=True)
