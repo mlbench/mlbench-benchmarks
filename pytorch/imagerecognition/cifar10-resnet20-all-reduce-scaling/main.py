@@ -14,30 +14,28 @@ import os
 import time
 
 import torch.distributed as dist
-from mlbench_core.controlflow.pytorch import (
-    prepare_batch,
-    record_train_batch_stats,
-    record_validation_stats,
-    validation_round,
-)
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
-    CheckpointsEvaluationControlFlow,
-)
+from torch.nn.modules.loss import CrossEntropyLoss
+from torch.utils.data import DataLoader
+
+from mlbench_core.controlflow.pytorch import (compute_train_batch_metrics,
+                                              prepare_batch,
+                                              record_train_batch_stats,
+                                              record_validation_stats,
+                                              validation_round)
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
+    CheckpointsEvaluationControlFlow
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
-from mlbench_core.evaluation.goals import (
-    task1_time_to_accuracy_goal,
-    task1_time_to_accuracy_light_goal,
-)
+from mlbench_core.evaluation.goals import (task1_time_to_accuracy_goal,
+                                           task1_time_to_accuracy_light_goal)
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
-from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
+from mlbench_core.lr_scheduler.pytorch.lr import \
+    MultistepLearningRatesWithWarmup
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-from torch.nn.modules.loss import CrossEntropyLoss
-from torch.utils.data import DataLoader
 
 
 def train_loop(
@@ -48,7 +46,6 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
-    by_layer=False,
 ):
     """Train loop"""
     num_parallel_workers = 2
@@ -60,7 +57,9 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
+    # LR = 0.1 / 256 / sample
     lr = (0.1 / 256) * batch_size * world_size
+    by_layer = False
 
     # Create Model
     model = ResNetCIFAR(resnet_size=20, bottleneck=False, num_classes=10, version=1)
@@ -148,6 +147,7 @@ def train_loop(
             tracker.train()
 
             for batch_idx, (data, target) in enumerate(train_loader):
+                tracker.batch_start()
                 data, target = prepare_batch(
                     data,
                     target,
@@ -155,8 +155,7 @@ def train_loop(
                     transform_target_dtype=False,
                     use_cuda=use_cuda,
                 )
-
-                tracker.batch_start()
+                tracker.record_batch_load()
 
                 # Clear gradients in the optimizer.
                 optimizer.zero_grad()
@@ -175,23 +174,26 @@ def train_loop(
                 tracker.record_batch_backprop()
 
                 # Aggregate gradients/parameters from all workers and apply updates to model
-                optimizer.step()
-                tracker.record_batch_opt_step()
+                optimizer.step(tracker=tracker)
 
+                metrics_results = compute_train_batch_metrics(
+                    loss.item(), output, target, metrics,
+                )
+                tracker.record_batch_comp_metrics()
                 tracker.batch_end()
 
                 record_train_batch_stats(
                     batch_idx,
                     loss.item(),
                     output,
-                    target,
-                    metrics,
+                    metrics_results,
                     tracker,
                     num_batches_per_device_train,
                 )
 
             # Scheduler per epoch
             scheduler.step()
+            tracker.epoch_end()
 
             # Perform validation and gather results
             metrics_values, loss = validation_round(
@@ -214,8 +216,6 @@ def train_loop(
             checkpointer.save(
                 tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
             )
-
-            tracker.epoch_end()
 
             if tracker.goal_reached:
                 print("Goal Reached!")
