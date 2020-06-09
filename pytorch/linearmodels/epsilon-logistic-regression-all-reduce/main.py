@@ -12,34 +12,29 @@ import os
 import time
 
 import torch.distributed as dist
-from mlbench_core.controlflow.pytorch import (
-    prepare_batch,
-    record_train_batch_stats,
-    record_validation_stats,
-    validation_round,
-)
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
-    CheckpointsEvaluationControlFlow,
-)
+from torch.utils.data import DataLoader
+
+from mlbench_core.controlflow.pytorch import (compute_train_batch_metrics,
+                                              prepare_batch,
+                                              record_train_batch_stats,
+                                              record_validation_stats,
+                                              validation_round)
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
+    CheckpointsEvaluationControlFlow
 from mlbench_core.dataset.linearmodels.pytorch.dataloader import LMDBDataset
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
-from mlbench_core.evaluation.goals import (
-    task2_time_to_accuracy_goal,
-    task2_time_to_accuracy_light_goal,
-)
+from mlbench_core.evaluation.goals import (task2_time_to_accuracy_goal,
+                                           task2_time_to_accuracy_light_goal)
 from mlbench_core.evaluation.pytorch.criterion import BCELossRegularized
-from mlbench_core.evaluation.pytorch.metrics import (
-    DiceCoefficient,
-    F1Score,
-    TopKAccuracy,
-)
-from mlbench_core.lr_scheduler.pytorch.lr import SQRTTimeDecayLR
+from mlbench_core.evaluation.pytorch.metrics import (DiceCoefficient, F1Score,
+                                                     TopKAccuracy)
+from mlbench_core.lr_scheduler.pytorch.lr import \
+    MultistepLearningRatesWithWarmup
 from mlbench_core.models.pytorch.linear_models import LogisticRegression
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-from torch.utils.data import DataLoader
 
 
 def train_loop(
@@ -50,16 +45,15 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
-    by_layer=False,
 ):
     r"""Main logic."""
-    num_parallel_workers = 0
+    num_parallel_workers = 2
     max_batch_per_epoch = None
     train_epochs = 20
-    batch_size = 100
+    batch_size = 128
 
     n_features = 2000
-    alpha = 200
+
     l1_coef = 0.0
     l2_coef = 0.0000025  # Regluarization 1 / train_size ( 1 / 400,000)
     dtype = "fp32"
@@ -67,18 +61,11 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
+    lr = 5
+    by_layer = False
+    agg_grad = False  # According to paper, we aggregate weights after update
+
     model = LogisticRegression(n_features)
-
-    optimizer = CentralizedSGD(
-        world_size=world_size,
-        model=model,
-        lr=0.1,
-        use_cuda=use_cuda,
-        by_layer=by_layer,
-    )
-
-    # Create a learning rate scheduler for an optimizer
-    scheduler = SQRTTimeDecayLR(optimizer, alpha)
 
     # A loss_function for computing the loss
     loss_function = BCELossRegularized(l1=l1_coef, l2=l2_coef, model=model)
@@ -86,6 +73,15 @@ def train_loop(
     if use_cuda:
         model = model.cuda()
         loss_function = loss_function.cuda()
+
+    optimizer = CentralizedSGD(
+        world_size=world_size,
+        model=model,
+        lr=lr,
+        use_cuda=use_cuda,
+        by_layer=by_layer,
+        agg_grad=agg_grad,
+    )
 
     metrics = [
         TopKAccuracy(),  # Binary accuracy with threshold 0.5
@@ -117,6 +113,20 @@ def train_loop(
         drop_last=False,
     )
 
+    num_batches_per_device_train = len(train_loader)
+
+    # Create a learning rate scheduler for an optimizer
+    # Milestones for reducing LR
+    milestones = [4 * num_batches_per_device_train, 6 * num_batches_per_device_train]
+    scheduler = MultistepLearningRatesWithWarmup(
+        optimizer,
+        world_size=world_size,
+        gamma=0.1,
+        milestones=milestones,
+        lr=lr,
+        warmup_duration=num_batches_per_device_train * 2,
+    )
+
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.NONE
     )
@@ -127,7 +137,6 @@ def train_loop(
         else:
             goal = task2_time_to_accuracy_goal()
 
-        num_batches_per_device_train = len(train_loader)
         tracker = Tracker(metrics, run_id, rank, goal=goal)
 
         dist.barrier()
@@ -139,6 +148,7 @@ def train_loop(
             tracker.train()
 
             for batch_idx, (data, target) in enumerate(train_loader):
+                tracker.batch_start()
                 data, target = prepare_batch(
                     data,
                     target,
@@ -146,8 +156,7 @@ def train_loop(
                     transform_target_dtype=False,
                     use_cuda=use_cuda,
                 )
-
-                tracker.batch_start()
+                tracker.record_batch_load()
 
                 # Clear gradients in the optimizer.
                 optimizer.zero_grad()
@@ -166,8 +175,15 @@ def train_loop(
                 tracker.record_batch_backprop()
 
                 # Aggregate gradients/parameters from all workers and apply updates to model
-                optimizer.step()
-                tracker.record_batch_opt_step()
+                optimizer.step(tracker=tracker)
+
+                metrics_results = compute_train_batch_metrics(
+                    loss.item(), output, target, metrics,
+                )
+
+                tracker.record_batch_comp_metrics()
+                # Scheduler per batch
+                scheduler.step()
 
                 tracker.batch_end()
 
@@ -175,14 +191,10 @@ def train_loop(
                     batch_idx,
                     loss.item(),
                     output,
-                    target,
-                    metrics,
+                    metrics_results,
                     tracker,
                     num_batches_per_device_train,
                 )
-
-            # Scheduler per epoch
-            scheduler.step()
 
             # Perform validation and gather results
             metrics_values, loss = validation_round(
