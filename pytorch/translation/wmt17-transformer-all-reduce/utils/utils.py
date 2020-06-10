@@ -1,11 +1,11 @@
-from mlbench_core.optim.pytorch.fp_optimizers import FP16Optimizer, FP32Optimizer
-from mlbench_core.utils import AverageMeter
-from mlbench_core.utils.pytorch.distributed import global_average
-
 import torch
 from apex.optimizers.fused_adam import FusedAdam
 from torch import distributed as dist
 from torch.optim import Adam
+
+from mlbench_core.optim.pytorch.fp_optimizers import FP16Optimizer, FP32Optimizer
+from mlbench_core.utils import AverageMeter
+from mlbench_core.utils.pytorch.distributed import global_average
 
 
 def build_optimizer(
@@ -70,11 +70,14 @@ def build_optimizer(
     return fp_optimizer, optimizer, model
 
 
-def opt_step(fp_optimizer, full_batch_size, update_freq, math_mode, world_size):
+def opt_step(
+    fp_optimizer, tracker, full_batch_size, update_freq, math_mode, world_size
+):
     """Performs one optimizer step.
 
     Args:
         fp_optimizer (:obj:`FP16Optimizer` | :obj:`FP32Optimizer`): The FP Optimizer
+        tracker (:obj:`mlbench_core.utils.Tracker`, optional) The current tracker
         full_batch_size (int): The total batch size (over all batches since last update)
         update_freq (int): The update frequency between batches
         math_mode (str): The used math mode
@@ -84,14 +87,14 @@ def opt_step(fp_optimizer, full_batch_size, update_freq, math_mode, world_size):
         (bool): Whether the weights were updated or not (i.e. if no overflow detected)
     """
     if math_mode == "fp32":
-        updated = fp_optimizer.step(denom=full_batch_size)
+        updated = fp_optimizer.step(tracker=tracker, denom=full_batch_size)
     elif math_mode == "fp16":
         # This results in reducing tensor and dividing by `loss_scale * full_batch_size`
         # but we divide by world size before reduction to avoid overflow, and
         # re-multiply after reduction to rescale
         multiplier = full_batch_size / (world_size * update_freq)
         denom = world_size * update_freq
-        updated = fp_optimizer.step(denom=denom, multiplier=multiplier)
+        updated = fp_optimizer.step(tracker=tracker, denom=denom, multiplier=multiplier)
     else:
         raise NotImplementedError("Unknown math mode {}".format(math_mode))
     return updated
@@ -136,14 +139,25 @@ def get_full_batch_size(rank_ntokens, world_size=1, use_cuda=False):
     return tensor.item()
 
 
-def validation_round(
-    loader, metrics, criterion, translator, tracker=None, use_cuda=False
-):
+def validation_round(loader, metrics, criterion, translator, tracker, use_cuda=False):
+    """Performs one round of validation for the Transformer model
+
+    Args:
+        loader (:obj:`torch.utils.data.DataLoader`): Data loader
+        metrics (list): List of metrics for evaluation
+        criterion (:obj:`torch.nn.Module): Loss function
+        translator (:obj:`mlbench_core.models.pytorch.transformer.SequenceGenerator`): Translator module
+        tracker (:obj:`mlbench_core.utils.Tracker`): Current Tracker
+        use_cuda (bool): Use GPU acceleration. Default: `False`.
+
+    Returns:
+        (dict of :obj:`mlbench_core.evaluation.pytorch.MLBenchMetric`: float, float):
+            The metrics averages over all workers, and the loss average.
+    """
     model = translator.model
     model.eval()
-    if tracker:
-        tracker.validation()
-        tracker.validation_start()
+    tracker.validation()
+    tracker.validation_start()
 
     losses = AverageMeter()
     for metric in metrics:
@@ -167,8 +181,7 @@ def validation_round(
     metric_averages = {metric: metric.average().item() for metric in metrics}
     loss_average = global_average(losses.sum, losses.count)
 
-    if tracker:
-        tracker.validation_end()
+    tracker.validation_end()
 
     return metric_averages, loss_average
 

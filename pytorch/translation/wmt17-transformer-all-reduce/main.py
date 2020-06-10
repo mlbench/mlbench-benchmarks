@@ -13,26 +13,34 @@ from copy import deepcopy
 import numpy as np
 import torch
 import torch.distributed as dist
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
-    CheckpointsEvaluationControlFlow
+from torch.utils.data import DataLoader
+
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
+    CheckpointsEvaluationControlFlow,
+)
 from mlbench_core.controlflow.pytorch.controlflow import (
-    record_train_batch_stats, record_validation_stats)
+    record_train_batch_stats,
+    record_validation_stats,
+)
 from mlbench_core.dataset.nlp.pytorch import WMT17Dataset, get_batches
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
 from mlbench_core.evaluation.pytorch.criterion import LabelSmoothing
 from mlbench_core.evaluation.pytorch.metrics import BLEUScore
 from mlbench_core.lr_scheduler.pytorch.lr import SQRTTimeDecayLRWithWarmup
-from mlbench_core.models.pytorch.transformer import (SequenceGenerator,
-                                                     TransformerModel)
+from mlbench_core.models.pytorch.transformer import SequenceGenerator, TransformerModel
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-from torch.utils.data import DataLoader
-
-from utils import (Arguments, build_optimizer, compute_loss,
-                   get_full_batch_size, opt_step, prepare_batch,
-                   validation_round)
+from utils import (
+    Arguments,
+    build_optimizer,
+    compute_loss,
+    get_full_batch_size,
+    opt_step,
+    prepare_batch,
+    validation_round,
+)
 
 try:
     import horovod.torch as hvd
@@ -139,8 +147,12 @@ def train_loop(
     model_args["dropout"] = 0.1
     model_args["softmax_type"] = "fast_fill"
 
-    lr = 1.976e-3
-    optimizer_args = {"lr": lr, "eps": 1e-9, "betas": (0.9, 0.98)}
+    lr = 1.976e-3 if world_size <= 16 else 1.732e-3
+    optimizer_args = {
+        "lr": lr,
+        "eps": 1e-9,
+        "betas": (0.9, 0.98) if world_size <= 16 else (0.86, 0.92),
+    }
     scheduler_args = {"base_lr": lr, "warmup_init_lr": 0.0, "warmup_steps": 1000}
 
     loss_scaling_fp16 = {
@@ -232,6 +244,7 @@ def train_loop(
     if use_cuda:
         model = model.cuda()
         criterion = criterion.cuda()
+
     fp_optimizer, optimizer, model = build_optimizer(
         model,
         optimizer_args,
@@ -282,12 +295,15 @@ def train_loop(
 
             iter_sample_size = 0
             for batch_idx, sample in enumerate(train_loader):
-                sample = prepare_batch(sample, use_cuda=use_cuda)
                 tracker.batch_start()
+
+                sample = prepare_batch(sample, use_cuda=use_cuda)
+                tracker.record_batch_load()
 
                 is_last = batch_idx == len(train_loader)
                 update = (batch_idx % update_freq) == update_freq - 1
                 init = (batch_idx % update_freq) == 0
+
                 # Clear gradients in the optimizer.
                 if init:
                     fp_optimizer.zero_grad()
@@ -308,15 +324,19 @@ def train_loop(
                 tracker.record_batch_backprop()
 
                 if update or is_last:
-                    # Optimize
+                    # Get batch size over all workers
                     full_bs = get_full_batch_size(
                         iter_sample_size, world_size=world_size, use_cuda=use_cuda
                     )
 
                     updated = opt_step(
-                        fp_optimizer, full_bs, update_freq, math_mode, world_size
+                        fp_optimizer,
+                        tracker,
+                        full_bs,
+                        update_freq,
+                        math_mode,
+                        world_size,
                     )
-                    tracker.record_batch_opt_step()
 
                     if updated:
                         scheduler.step()
@@ -327,8 +347,7 @@ def train_loop(
                     batch_idx=batch_idx,
                     loss=loss_per_sample,
                     output=torch.Tensor([0]),
-                    target=None,
-                    metrics=[],
+                    metric_results={},
                     tracker=tracker,
                     num_batches_per_device_train=num_batches_per_device_train,
                 )
