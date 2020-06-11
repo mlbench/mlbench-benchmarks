@@ -31,6 +31,16 @@ jobs:
       script:
         - docker build -t pytorch-epsilon-logistic-regression-all-reduce:travis-ci-test ./pytorch/linearmodels/epsilon-logistic-regression-all-reduce
 
+    - stage: build pytorch-wmt17-transformer-all-reduce
+      language: bash
+      sudo: required
+
+      services:
+        - docker
+      install: true
+      script:
+        - docker build -t pytorch-wmt17-transformer-all-reduce:travis-ci-test ./pytorch/translation/wmt17-transformer-all-reduce
+
     - stage: build pytorch-openmpi-wikitext2-rnn-lm
       language: bash
       sudo: required
@@ -66,6 +76,7 @@ stages:
   - build pytorch-cifar10-resnet20-all-reduce
   - build pytorch-cifar10-resnet20-all-reduce-scaling
   - build pytorch-epsilon-logistic-regression-all-reduce
+  - build pytorch-wmt17-transformer-all-reduce
   - build pytorch-openmpi-wikitext2-rnn-lm
   - build tensorflow-openmpi-cifar10-resnet20-all-reduce
   - build tensorflow-base
