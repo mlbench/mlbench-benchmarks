@@ -50,7 +50,7 @@ def train_loop(
     num_parallel_workers = 2
     max_batch_per_epoch = None
     train_epochs = 20
-    batch_size = 128
+    batch_size = 100
 
     n_features = 2000
 
@@ -61,7 +61,7 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    lr = 5
+    lr = 2
     by_layer = False
     agg_grad = False  # According to paper, we aggregate weights after update
 
@@ -117,14 +117,14 @@ def train_loop(
 
     # Create a learning rate scheduler for an optimizer
     # Milestones for reducing LR
-    milestones = [4 * num_batches_per_device_train, 6 * num_batches_per_device_train]
+    milestones = [10, 15]
     scheduler = MultistepLearningRatesWithWarmup(
         optimizer,
         world_size=world_size,
         gamma=0.1,
         milestones=milestones,
         lr=lr,
-        warmup_duration=num_batches_per_device_train * 2,
+        warmup_duration=2,
     )
 
     checkpointer = Checkpointer(
@@ -182,8 +182,6 @@ def train_loop(
                 )
 
                 tracker.record_batch_comp_metrics()
-                # Scheduler per batch
-                scheduler.step()
 
                 tracker.batch_end()
 
@@ -195,6 +193,9 @@ def train_loop(
                     tracker,
                     num_batches_per_device_train,
                 )
+
+            # Scheduler per epoch
+            scheduler.step()
 
             # Perform validation and gather results
             metrics_values, loss = validation_round(
