@@ -196,6 +196,7 @@ def train_loop(
 
             # Scheduler per epoch
             scheduler.step()
+            tracker.epoch_end()
 
             # Perform validation and gather results
             metrics_values, loss = validation_round(
@@ -219,10 +220,9 @@ def train_loop(
                 tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
             )
 
-            tracker.epoch_end()
-
             if tracker.goal_reached:
                 print("Goal Reached!")
+                dist.barrier()
                 time.sleep(10)
                 return
     else:
