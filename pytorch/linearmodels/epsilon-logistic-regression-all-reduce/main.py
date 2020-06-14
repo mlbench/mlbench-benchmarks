@@ -14,22 +14,29 @@ import time
 import torch.distributed as dist
 from torch.utils.data import DataLoader
 
-from mlbench_core.controlflow.pytorch import (compute_train_batch_metrics,
-                                              prepare_batch,
-                                              record_train_batch_stats,
-                                              record_validation_stats,
-                                              validation_round)
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
-    CheckpointsEvaluationControlFlow
+from mlbench_core.controlflow.pytorch import (
+    compute_train_batch_metrics,
+    prepare_batch,
+    record_train_batch_stats,
+    record_validation_stats,
+    validation_round,
+)
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
+    CheckpointsEvaluationControlFlow,
+)
 from mlbench_core.dataset.linearmodels.pytorch.dataloader import LMDBDataset
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
-from mlbench_core.evaluation.goals import (task2_time_to_accuracy_goal,
-                                           task2_time_to_accuracy_light_goal)
+from mlbench_core.evaluation.goals import (
+    task2_time_to_accuracy_goal,
+    task2_time_to_accuracy_light_goal,
+)
 from mlbench_core.evaluation.pytorch.criterion import BCELossRegularized
-from mlbench_core.evaluation.pytorch.metrics import (DiceCoefficient, F1Score,
-                                                     TopKAccuracy)
-from mlbench_core.lr_scheduler.pytorch.lr import \
-    MultistepLearningRatesWithWarmup
+from mlbench_core.evaluation.pytorch.metrics import (
+    DiceCoefficient,
+    F1Score,
+    TopKAccuracy,
+)
+from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
 from mlbench_core.models.pytorch.linear_models import LogisticRegression
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker
@@ -55,7 +62,7 @@ def train_loop(
     n_features = 2000
 
     l1_coef = 0.0
-    l2_coef = 0.0000025  # Regluarization 1 / train_size ( 1 / 400,000)
+    l2_coef = 0.0000025  # Regularization 1 / train_size ( 1 / 400,000)
     dtype = "fp32"
 
     rank = dist.get_rank()
@@ -117,14 +124,14 @@ def train_loop(
 
     # Create a learning rate scheduler for an optimizer
     # Milestones for reducing LR
-    milestones = [10, 15]
+    milestones = [6 * num_batches_per_device_train, 12 * num_batches_per_device_train]
     scheduler = MultistepLearningRatesWithWarmup(
         optimizer,
         world_size=world_size,
-        gamma=0.1,
+        gamma=0.5,
         milestones=milestones,
         lr=lr,
-        warmup_duration=2,
+        warmup_duration=num_batches_per_device_train,
     )
 
     checkpointer = Checkpointer(
@@ -194,8 +201,8 @@ def train_loop(
                     num_batches_per_device_train,
                 )
 
-            # Scheduler per epoch
-            scheduler.step()
+                # Scheduler per epoch
+                scheduler.step()
             tracker.epoch_end()
 
             # Perform validation and gather results
