@@ -8,10 +8,12 @@ Values are taken from https://arxiv.org/pdf/1705.07751.pdf
 
 import argparse
 import json
+import math
 import os
 import time
 
 import torch.distributed as dist
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 from mlbench_core.controlflow.pytorch import (
@@ -68,7 +70,7 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    lr = 2
+    lr = 2 * world_size
     by_layer = False
     agg_grad = False  # According to paper, we aggregate weights after update
 
@@ -122,18 +124,14 @@ def train_loop(
 
     num_batches_per_device_train = len(train_loader)
 
-    # Create a learning rate scheduler for an optimizer
-    # Milestones for reducing LR
-    milestones = [6 * num_batches_per_device_train, 12 * num_batches_per_device_train]
-    scheduler = MultistepLearningRatesWithWarmup(
+    scheduler = ReduceLROnPlateau(
         optimizer,
-        world_size=world_size,
-        gamma=0.5,
-        milestones=milestones,
-        lr=lr,
-        warmup_duration=num_batches_per_device_train,
+        threshold=0.01,
+        verbose=True,
+        patience=1,
+        threshold_mode="abs",
+        min_lr=0.1,
     )
-
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.NONE
     )
@@ -201,8 +199,6 @@ def train_loop(
                     num_batches_per_device_train,
                 )
 
-                # Scheduler per epoch
-                scheduler.step()
             tracker.epoch_end()
 
             # Perform validation and gather results
@@ -218,6 +214,9 @@ def train_loop(
                 max_batches=max_batch_per_epoch,
             )
 
+            # Scheduler per epoch
+            scheduler.step(loss)
+            
             # Record validation stats
             is_best = record_validation_stats(
                 metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
