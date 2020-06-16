@@ -8,10 +8,12 @@ Values are taken from https://arxiv.org/pdf/1705.07751.pdf
 
 import argparse
 import json
+import logging
 import math
 import os
 import time
 
+import torch
 import torch.distributed as dist
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
@@ -38,12 +40,14 @@ from mlbench_core.evaluation.pytorch.metrics import (
     F1Score,
     TopKAccuracy,
 )
-from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
+from mlbench_core.lr_scheduler.pytorch.lr import ReduceLROnPlateauWithWarmup
 from mlbench_core.models.pytorch.linear_models import LogisticRegression
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
+
+logger = logging.getLogger("mlbench")
 
 
 def train_loop(
@@ -70,7 +74,10 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    lr = 2 * world_size
+    lr = 4
+    scaled_lr = lr * min(16, world_size)
+    print("LR={}".format(scaled_lr))
+
     by_layer = False
     agg_grad = False  # According to paper, we aggregate weights after update
 
@@ -86,7 +93,7 @@ def train_loop(
     optimizer = CentralizedSGD(
         world_size=world_size,
         model=model,
-        lr=lr,
+        lr=scaled_lr,
         use_cuda=use_cuda,
         by_layer=by_layer,
         agg_grad=agg_grad,
@@ -124,14 +131,35 @@ def train_loop(
 
     num_batches_per_device_train = len(train_loader)
 
+    # warmup_duration = 1
+    # milestones = [5 * num_batches_per_device_train] if world_size > 1 else [float('inf')]
+    # scheduler = MultistepLearningRatesWithWarmup(optimizer, gamma=0.5,
+    #                                              milestones=milestones,
+    #                                              warmup_init_lr=lr,
+    #                                              scaled_lr=scaled_lr,
+    #                                              warmup_duration=2 * num_batches_per_device_train)
+
+    # warmup_epochs = max(0, (world_size // 16))
     scheduler = ReduceLROnPlateau(
         optimizer,
-        threshold=0.01,
+        factor=0.75,
+        patience=0,
         verbose=True,
-        patience=1,
         threshold_mode="abs",
-        min_lr=0.1,
+        threshold=0.01,
+        min_lr=lr,
     )
+    # scheduler = ReduceLROnPlateauWithWarmup(optimizer,
+    #                                         warmup_init_lr=lr,
+    #                                         scaled_lr=scaled_lr,
+    #                                         warmup_epochs=warmup_epochs,
+    #                                         batches_per_epoch=num_batches_per_device_train,
+    #                                         factor=0.5,
+    #                                         patience=1,
+    #                                         threshold_mode='abs',
+    #                                         threshold=0.01,
+    #                                         min_lr=lr,
+    #                                         verbose=True)
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.NONE
     )
@@ -188,6 +216,7 @@ def train_loop(
 
                 tracker.record_batch_comp_metrics()
 
+                # scheduler.batch_step()
                 tracker.batch_end()
 
                 record_train_batch_stats(
@@ -199,6 +228,8 @@ def train_loop(
                     num_batches_per_device_train,
                 )
 
+            # Scheduler per epoch
+            # scheduler.step()
             tracker.epoch_end()
 
             # Perform validation and gather results
@@ -214,18 +245,15 @@ def train_loop(
                 max_batches=max_batch_per_epoch,
             )
 
-            # Scheduler per epoch
             scheduler.step(loss)
-            
             # Record validation stats
             is_best = record_validation_stats(
                 metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
             )
-
-            checkpointer.save(
-                tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
-            )
-
+            # checkpointer.save(
+            #     tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
+            # )
+            logger.info("Epoch {} Loss = {}".format(epoch, loss))
             if tracker.goal_reached:
                 print("Goal Reached!")
                 dist.barrier()
