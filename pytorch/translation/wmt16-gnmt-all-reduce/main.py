@@ -73,7 +73,7 @@ def train_loop(
     train_epochs = 8 if world_size <= 16 else 12
     train_min_len, train_max_len = 0, 75
     val_min_len, val_max_len = 0, 150
-    math_mode = "fp16"  # One of `fp16`, `fp32` or `amp_fp16`
+    math_mode = "amp_fp16"  # One of `fp16`, `fp32` or `amp_fp16`
     lang = ("en", "de")
 
     # Training
