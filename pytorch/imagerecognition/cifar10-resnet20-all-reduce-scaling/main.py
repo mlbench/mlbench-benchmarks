@@ -10,6 +10,7 @@ for more details.
 """
 import argparse
 import json
+import math
 import os
 import time
 
@@ -17,20 +18,24 @@ import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 
-from mlbench_core.controlflow.pytorch import (compute_train_batch_metrics,
-                                              prepare_batch,
-                                              record_train_batch_stats,
-                                              record_validation_stats,
-                                              validation_round)
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
-    CheckpointsEvaluationControlFlow
+from mlbench_core.controlflow.pytorch import (
+    compute_train_batch_metrics,
+    prepare_batch,
+    record_train_batch_stats,
+    record_validation_stats,
+    validation_round,
+)
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
+    CheckpointsEvaluationControlFlow,
+)
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
-from mlbench_core.evaluation.goals import (task1_time_to_accuracy_goal,
-                                           task1_time_to_accuracy_light_goal)
+from mlbench_core.evaluation.goals import (
+    task1_time_to_accuracy_goal,
+    task1_time_to_accuracy_light_goal,
+)
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
-from mlbench_core.lr_scheduler.pytorch.lr import \
-    MultistepLearningRatesWithWarmup
+from mlbench_core.lr_scheduler.pytorch.lr import ReduceLROnPlateauWithWarmup
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker
@@ -51,14 +56,15 @@ def train_loop(
     num_parallel_workers = 2
     max_batch_per_epoch = None
     train_epochs = 164
-    batch_size = 256
+    batch_size = 128
     dtype = "fp32"
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
     # LR = 0.1 / 256 / sample
-    lr = (0.1 / 256) * batch_size * world_size
+    lr = 0.02
+    scaled_lr = lr * world_size
     by_layer = False
 
     # Create Model
@@ -74,18 +80,6 @@ def train_loop(
         nesterov=False,
         use_cuda=use_cuda,
         by_layer=by_layer,
-    )
-
-    # Create a learning rate scheduler for an optimizer
-    scheduler = MultistepLearningRatesWithWarmup(
-        optimizer,
-        world_size=world_size,
-        milestones=[82, 109],
-        gamma=0.1,
-        lr=lr,
-        warmup_duration=5,
-        warmup_linear_scaling=True,
-        warmup_init_lr=None,
     )
 
     # A loss_function for computing the loss
@@ -121,6 +115,20 @@ def train_loop(
         num_workers=num_parallel_workers,
         pin_memory=use_cuda,
         drop_last=False,
+    )
+
+    # Create a learning rate scheduler for an optimizer
+    scheduler = ReduceLROnPlateauWithWarmup(
+        optimizer,
+        warmup_init_lr=lr,
+        scaled_lr=scaled_lr,
+        warmup_epochs=int(math.log(world_size, 2)),  # Adaptive warmup period
+        factor=0.5,
+        threshold_mode="abs",
+        threshold=0.01,
+        patience=1,
+        verbose=True,
+        min_lr=lr,
     )
 
     checkpointer = Checkpointer(
@@ -192,7 +200,6 @@ def train_loop(
                 )
 
             # Scheduler per epoch
-            scheduler.step()
             tracker.epoch_end()
 
             # Perform validation and gather results
@@ -207,6 +214,7 @@ def train_loop(
                 use_cuda=use_cuda,
                 max_batches=max_batch_per_epoch,
             )
+            scheduler.step(loss)
 
             # Record validation stats
             is_best = record_validation_stats(
@@ -219,6 +227,7 @@ def train_loop(
 
             if tracker.goal_reached:
                 print("Goal Reached!")
+                dist.barrier()
                 time.sleep(10)
                 return
     else:
