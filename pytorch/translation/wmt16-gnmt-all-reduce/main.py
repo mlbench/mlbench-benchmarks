@@ -11,6 +11,8 @@ import time
 
 import torch
 import torch.distributed as dist
+from torch.utils.data import DataLoader
+
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
     CheckpointsEvaluationControlFlow,
 )
@@ -29,8 +31,6 @@ from mlbench_core.models.pytorch.gnmt import GNMT, Translator
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-from torch.utils.data import DataLoader
-
 from utils import (
     build_optimizer,
     compute_loss,
@@ -48,8 +48,10 @@ except ImportError as e:
 logger = logging.getLogger("mlbench")
 
 
-def get_train_batch_size(global_batch_size, update_freq, world_size):
-    return int(global_batch_size / (update_freq * world_size))
+def get_learning_rate(global_batch_size, xy1=(2048, 2e-3), xy2=(8192, 4e-3)):
+    a = (xy1[1] - xy2[1]) / (xy1[0] - xy2[0])
+    b = xy1[1] - xy1[0] * a
+    return global_batch_size * a + b
 
 
 def train_loop(
@@ -68,18 +70,16 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    train_epochs = 8
+    train_epochs = 8 if world_size <= 16 else 12
     train_min_len, train_max_len = 0, 75
     val_min_len, val_max_len = 0, 150
     math_mode = "fp16"  # One of `fp16`, `fp32` or `amp_fp16`
     lang = ("en", "de")
 
     # Training
-    train_global_batch_size = 2048
     update_freq = max(16 // world_size, 1)
-    train_batch_size = get_train_batch_size(
-        train_global_batch_size, update_freq, world_size
-    )
+    train_batch_size = 128
+    train_global_batch_size = update_freq * world_size * train_batch_size
     val_batch_size = 64
 
     # Model attributes
@@ -98,13 +98,16 @@ def train_loop(
     loss_scaling = {"init_scale": 1024, "upscale_interval": 128}
 
     # Optimizer
-    optimizer_args = {"lr": 2.00e-3, "grad_clip": 5.0}
+    optimizer_args = {
+        "lr": get_learning_rate(train_global_batch_size),
+        "grad_clip": 5.0,
+    }
 
     # Scheduler
     scheduler_args = {
         "warmup_steps": 200,
-        "remain_steps": 6453,
-        "decay_interval": 809,
+        "remain_steps": 0.4,
+        "decay_interval": 0.05,
         "decay_steps": 4,
         "decay_factor": 0.5,
     }
@@ -243,8 +246,9 @@ def train_loop(
             model.train()
             tracker.train()
             for batch_idx, (data, target) in enumerate(train_loader):
-                data, target = prepare_batch(data, target, use_cuda=use_cuda)
                 tracker.batch_start()
+                data, target = prepare_batch(data, target, use_cuda=use_cuda)
+                tracker.record_batch_load()
 
                 is_last = batch_idx == len(train_loader)
                 update = (batch_idx % update_freq) == update_freq - 1
@@ -270,8 +274,13 @@ def train_loop(
 
                 # Opt step
                 if update or is_last:
-                    updated = opt_step(fp_optimizer, update_freq, math_mode, world_size)
-                    tracker.record_batch_opt_step()
+                    updated = opt_step(
+                        fp_optimizer,
+                        update_freq,
+                        math_mode,
+                        world_size,
+                        tracker=tracker,
+                    )
                     # Learning rate scheduler
                     if updated:
                         scheduler.step()
@@ -282,8 +291,7 @@ def train_loop(
                     batch_idx=batch_idx,
                     loss=loss_per_token,
                     output=target[0],  # Use target just for the size
-                    target=None,
-                    metrics=[],
+                    metric_results={},
                     tracker=tracker,
                     num_batches_per_device_train=num_batches_per_device_train,
                 )
@@ -339,6 +347,7 @@ def train_loop(
 
             if tracker.goal_reached:
                 print("Goal Reached!")
+                dist.barrier()
                 time.sleep(10)
                 return
     else:

@@ -2,6 +2,8 @@ import logging
 
 import torch
 from apex import amp
+from torch.optim import Adam
+
 from mlbench_core.optim.pytorch.fp_optimizers import (
     AMPOptimizer,
     FP16Optimizer,
@@ -9,7 +11,6 @@ from mlbench_core.optim.pytorch.fp_optimizers import (
 )
 from mlbench_core.utils import AverageMeter
 from mlbench_core.utils.pytorch.distributed import global_average
-from torch.optim import Adam
 
 logger = logging.getLogger("mlbench")
 LOG_EVERY_N_BATCHES = 25
@@ -125,22 +126,23 @@ def compute_loss(src, trg, output, loss_func, iter_size):
     return loss, loss_per_token
 
 
-def opt_step(fp_optimizer, update_freq, math_mode, world_size):
+def opt_step(fp_optimizer, update_freq, math_mode, world_size, tracker):
     """Performs one optimizer step.
     Args:
         fp_optimizer (:obj:`FP16Optimizer` | :obj:`FP32Optimizer`): The FP Optimizer
         update_freq (int): The update frequency between batches
         math_mode (str): The used math mode
         world_size (int): Distributed world size
+        tracker: (:obj:`mlbench_core.utils.Tracker`): Current tracker object
     Returns:
         (bool): Whether the weights were updated or not (i.e. if no overflow detected)
     """
     if math_mode == "fp32":
-        updated = fp_optimizer.step()
+        updated = fp_optimizer.step(tracker=tracker)
     elif math_mode == "fp16" or math_mode == "amp_fp16":
         # Divide gradients by world_size*update_freq
         denom = world_size * update_freq
-        updated = fp_optimizer.step(denom=denom)
+        updated = fp_optimizer.step(tracker=tracker, denom=denom)
     else:
         raise NotImplementedError
 
