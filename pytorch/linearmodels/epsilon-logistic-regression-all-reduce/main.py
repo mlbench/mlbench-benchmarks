@@ -131,15 +131,6 @@ def train_loop(
 
     num_batches_per_device_train = len(train_loader)
 
-    # warmup_duration = 1
-    # milestones = [5 * num_batches_per_device_train] if world_size > 1 else [float('inf')]
-    # scheduler = MultistepLearningRatesWithWarmup(optimizer, gamma=0.5,
-    #                                              milestones=milestones,
-    #                                              warmup_init_lr=lr,
-    #                                              scaled_lr=scaled_lr,
-    #                                              warmup_duration=2 * num_batches_per_device_train)
-
-    # warmup_epochs = max(0, (world_size // 16))
     scheduler = ReduceLROnPlateau(
         optimizer,
         factor=0.75,
@@ -149,17 +140,6 @@ def train_loop(
         threshold=0.01,
         min_lr=lr,
     )
-    # scheduler = ReduceLROnPlateauWithWarmup(optimizer,
-    #                                         warmup_init_lr=lr,
-    #                                         scaled_lr=scaled_lr,
-    #                                         warmup_epochs=warmup_epochs,
-    #                                         batches_per_epoch=num_batches_per_device_train,
-    #                                         factor=0.5,
-    #                                         patience=1,
-    #                                         threshold_mode='abs',
-    #                                         threshold=0.01,
-    #                                         min_lr=lr,
-    #                                         verbose=True)
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.NONE
     )
@@ -228,8 +208,6 @@ def train_loop(
                     num_batches_per_device_train,
                 )
 
-            # Scheduler per epoch
-            # scheduler.step()
             tracker.epoch_end()
 
             # Perform validation and gather results
@@ -244,16 +222,15 @@ def train_loop(
                 use_cuda=use_cuda,
                 max_batches=max_batch_per_epoch,
             )
-
+            # Scheduler per epoch
             scheduler.step(loss)
             # Record validation stats
             is_best = record_validation_stats(
                 metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
             )
-            # checkpointer.save(
-            #     tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
-            # )
-            logger.info("Epoch {} Loss = {}".format(epoch, loss))
+            checkpointer.save(
+                tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
+            )
             if tracker.goal_reached:
                 print("Goal Reached!")
                 dist.barrier()

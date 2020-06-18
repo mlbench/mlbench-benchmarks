@@ -141,8 +141,8 @@ def opt_step(fp_optimizer, update_freq, math_mode, world_size, tracker):
         updated = fp_optimizer.step(tracker=tracker)
     elif math_mode == "fp16" or math_mode == "amp_fp16":
         # Divide gradients by world_size*update_freq
-        denom = world_size * update_freq
-        updated = fp_optimizer.step(tracker=tracker, denom=denom)
+        # denom = world_size * update_freq
+        updated = fp_optimizer.step(tracker=tracker, denom=1)
     else:
         raise NotImplementedError
 
