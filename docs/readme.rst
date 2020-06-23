@@ -3,18 +3,13 @@
     <br>
 .. _benchmark-implementations:
 
-MLBench Benchmark Implementations
-=================================
+MLBench Implementations
+=======================
 
-MLBench contains several benchmark tasks and implementations. Tasks combinations of datasets and target metrics, whereas the implementations are concrete models and code that solve a task.
+MLBench consists of several benchmark tasks and implementations. For each task on a dataset and target metric, we provide a reference implementation, as well as optional additional implementation variants for comparisons.
 
-For an overview of MLBench tasks, please refer to the :doc:`Benchmarking Tasks Section <mlbench-docs:benchmark-tasks>`
+For an overview of all MLBench tasks, please refer to the :doc:`Benchmark Tasks Documentation <mlbench-docs:benchmark-tasks>`
 
-
-Closed Division Benchmark Implementations
------------------------------------------
-
-A Benchmark Implementation is a model with fixed hyperparameters that solves a Benchmark Task.
 
 
 Image Recognition
