@@ -8,16 +8,10 @@ Values are taken from https://arxiv.org/pdf/1705.07751.pdf
 
 import argparse
 import json
-import logging
-import math
 import os
 import time
 
-import torch
 import torch.distributed as dist
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import DataLoader
-
 from mlbench_core.controlflow.pytorch import (
     compute_train_batch_metrics,
     prepare_batch,
@@ -40,14 +34,13 @@ from mlbench_core.evaluation.pytorch.metrics import (
     F1Score,
     TopKAccuracy,
 )
-from mlbench_core.lr_scheduler.pytorch.lr import ReduceLROnPlateauWithWarmup
 from mlbench_core.models.pytorch.linear_models import LogisticRegression
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-
-logger = logging.getLogger("mlbench")
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.data import DataLoader
 
 
 def train_loop(
@@ -76,7 +69,6 @@ def train_loop(
 
     lr = 4
     scaled_lr = lr * min(16, world_size)
-    print("LR={}".format(scaled_lr))
 
     by_layer = False
     agg_grad = False  # According to paper, we aggregate weights after update
