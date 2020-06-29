@@ -13,6 +13,7 @@ import time
 
 import torch.distributed as dist
 from mlbench_core.controlflow.pytorch import (
+    compute_train_batch_metrics,
     prepare_batch,
     record_train_batch_stats,
     record_validation_stats,
@@ -33,12 +34,12 @@ from mlbench_core.evaluation.pytorch.metrics import (
     F1Score,
     TopKAccuracy,
 )
-from mlbench_core.lr_scheduler.pytorch.lr import SQRTTimeDecayLR
 from mlbench_core.models.pytorch.linear_models import LogisticRegression
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 
@@ -50,35 +51,29 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
-    by_layer=False,
 ):
     r"""Main logic."""
-    num_parallel_workers = 0
+    num_parallel_workers = 2
     max_batch_per_epoch = None
     train_epochs = 20
     batch_size = 100
 
     n_features = 2000
-    alpha = 200
+
     l1_coef = 0.0
-    l2_coef = 0.0000025  # Regluarization 1 / train_size ( 1 / 400,000)
+    l2_coef = 0.0000025  # Regularization 1 / train_size ( 1 / 400,000)
     dtype = "fp32"
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
+    lr = 4
+    scaled_lr = lr * min(16, world_size)
+
+    by_layer = False
+    agg_grad = False  # According to paper, we aggregate weights after update
+
     model = LogisticRegression(n_features)
-
-    optimizer = CentralizedSGD(
-        world_size=world_size,
-        model=model,
-        lr=0.1,
-        use_cuda=use_cuda,
-        by_layer=by_layer,
-    )
-
-    # Create a learning rate scheduler for an optimizer
-    scheduler = SQRTTimeDecayLR(optimizer, alpha)
 
     # A loss_function for computing the loss
     loss_function = BCELossRegularized(l1=l1_coef, l2=l2_coef, model=model)
@@ -86,6 +81,15 @@ def train_loop(
     if use_cuda:
         model = model.cuda()
         loss_function = loss_function.cuda()
+
+    optimizer = CentralizedSGD(
+        world_size=world_size,
+        model=model,
+        lr=scaled_lr,
+        use_cuda=use_cuda,
+        by_layer=by_layer,
+        agg_grad=agg_grad,
+    )
 
     metrics = [
         TopKAccuracy(),  # Binary accuracy with threshold 0.5
@@ -117,6 +121,17 @@ def train_loop(
         drop_last=False,
     )
 
+    num_batches_per_device_train = len(train_loader)
+
+    scheduler = ReduceLROnPlateau(
+        optimizer,
+        factor=0.75,
+        patience=0,
+        verbose=True,
+        threshold_mode="abs",
+        threshold=0.01,
+        min_lr=lr,
+    )
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.NONE
     )
@@ -127,7 +142,6 @@ def train_loop(
         else:
             goal = task2_time_to_accuracy_goal()
 
-        num_batches_per_device_train = len(train_loader)
         tracker = Tracker(metrics, run_id, rank, goal=goal)
 
         dist.barrier()
@@ -139,6 +153,7 @@ def train_loop(
             tracker.train()
 
             for batch_idx, (data, target) in enumerate(train_loader):
+                tracker.batch_start()
                 data, target = prepare_batch(
                     data,
                     target,
@@ -146,8 +161,7 @@ def train_loop(
                     transform_target_dtype=False,
                     use_cuda=use_cuda,
                 )
-
-                tracker.batch_start()
+                tracker.record_batch_load()
 
                 # Clear gradients in the optimizer.
                 optimizer.zero_grad()
@@ -166,23 +180,27 @@ def train_loop(
                 tracker.record_batch_backprop()
 
                 # Aggregate gradients/parameters from all workers and apply updates to model
-                optimizer.step()
-                tracker.record_batch_opt_step()
+                optimizer.step(tracker=tracker)
 
+                metrics_results = compute_train_batch_metrics(
+                    loss.item(), output, target, metrics,
+                )
+
+                tracker.record_batch_comp_metrics()
+
+                # scheduler.batch_step()
                 tracker.batch_end()
 
                 record_train_batch_stats(
                     batch_idx,
                     loss.item(),
                     output,
-                    target,
-                    metrics,
+                    metrics_results,
                     tracker,
                     num_batches_per_device_train,
                 )
 
-            # Scheduler per epoch
-            scheduler.step()
+            tracker.epoch_end()
 
             # Perform validation and gather results
             metrics_values, loss = validation_round(
@@ -196,20 +214,18 @@ def train_loop(
                 use_cuda=use_cuda,
                 max_batches=max_batch_per_epoch,
             )
-
+            # Scheduler per epoch
+            scheduler.step(loss)
             # Record validation stats
             is_best = record_validation_stats(
                 metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
             )
-
             checkpointer.save(
                 tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
             )
-
-            tracker.epoch_end()
-
             if tracker.goal_reached:
                 print("Goal Reached!")
+                dist.barrier()
                 time.sleep(10)
                 return
     else:

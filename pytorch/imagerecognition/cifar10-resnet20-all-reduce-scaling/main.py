@@ -10,11 +10,16 @@ for more details.
 """
 import argparse
 import json
+import math
 import os
 import time
 
 import torch.distributed as dist
+from torch.nn.modules.loss import CrossEntropyLoss
+from torch.utils.data import DataLoader
+
 from mlbench_core.controlflow.pytorch import (
+    compute_train_batch_metrics,
     prepare_batch,
     record_train_batch_stats,
     record_validation_stats,
@@ -30,14 +35,12 @@ from mlbench_core.evaluation.goals import (
     task1_time_to_accuracy_light_goal,
 )
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
-from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
+from mlbench_core.lr_scheduler.pytorch.lr import ReduceLROnPlateauWithWarmup
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-from torch.nn.modules.loss import CrossEntropyLoss
-from torch.utils.data import DataLoader
 
 
 def train_loop(
@@ -48,17 +51,21 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
-    by_layer=False,
 ):
     """Train loop"""
     num_parallel_workers = 2
     max_batch_per_epoch = None
     train_epochs = 164
-    batch_size = 256
+    batch_size = 128
     dtype = "fp32"
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+
+    # LR = 0.1 / 256 / sample
+    lr = 0.02
+    scaled_lr = lr * world_size
+    by_layer = False
 
     # Create Model
     model = ResNetCIFAR(resnet_size=20, bottleneck=False, num_classes=10, version=1)
@@ -67,24 +74,12 @@ def train_loop(
     optimizer = CentralizedSGD(
         world_size=world_size,
         model=model,
-        lr=0.2,
+        lr=lr,
         momentum=0.9,
         weight_decay=1e-4,
         nesterov=False,
         use_cuda=use_cuda,
         by_layer=by_layer,
-    )
-
-    # Create a learning rate scheduler for an optimizer
-    scheduler = MultistepLearningRatesWithWarmup(
-        optimizer,
-        world_size=world_size,
-        milestones=[82, 109],
-        gamma=0.1,
-        lr=0.1,
-        warmup_duration=5,
-        warmup_linear_scaling=True,
-        warmup_init_lr=None,
     )
 
     # A loss_function for computing the loss
@@ -122,6 +117,20 @@ def train_loop(
         drop_last=False,
     )
 
+    # Create a learning rate scheduler for an optimizer
+    scheduler = ReduceLROnPlateauWithWarmup(
+        optimizer,
+        warmup_init_lr=lr,
+        scaled_lr=scaled_lr,
+        warmup_epochs=int(math.log(world_size, 2)),  # Adaptive warmup period
+        factor=0.5,
+        threshold_mode="abs",
+        threshold=0.01,
+        patience=1,
+        verbose=True,
+        min_lr=lr,
+    )
+
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.NONE
     )
@@ -146,6 +155,7 @@ def train_loop(
             tracker.train()
 
             for batch_idx, (data, target) in enumerate(train_loader):
+                tracker.batch_start()
                 data, target = prepare_batch(
                     data,
                     target,
@@ -153,8 +163,7 @@ def train_loop(
                     transform_target_dtype=False,
                     use_cuda=use_cuda,
                 )
-
-                tracker.batch_start()
+                tracker.record_batch_load()
 
                 # Clear gradients in the optimizer.
                 optimizer.zero_grad()
@@ -173,23 +182,25 @@ def train_loop(
                 tracker.record_batch_backprop()
 
                 # Aggregate gradients/parameters from all workers and apply updates to model
-                optimizer.step()
-                tracker.record_batch_opt_step()
+                optimizer.step(tracker=tracker)
 
+                metrics_results = compute_train_batch_metrics(
+                    loss.item(), output, target, metrics,
+                )
+                tracker.record_batch_comp_metrics()
                 tracker.batch_end()
 
                 record_train_batch_stats(
                     batch_idx,
                     loss.item(),
                     output,
-                    target,
-                    metrics,
+                    metrics_results,
                     tracker,
                     num_batches_per_device_train,
                 )
 
             # Scheduler per epoch
-            scheduler.step()
+            tracker.epoch_end()
 
             # Perform validation and gather results
             metrics_values, loss = validation_round(
@@ -203,6 +214,7 @@ def train_loop(
                 use_cuda=use_cuda,
                 max_batches=max_batch_per_epoch,
             )
+            scheduler.step(loss)
 
             # Record validation stats
             is_best = record_validation_stats(
@@ -213,10 +225,9 @@ def train_loop(
                 tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
             )
 
-            tracker.epoch_end()
-
             if tracker.goal_reached:
                 print("Goal Reached!")
+                dist.barrier()
                 time.sleep(10)
                 return
     else:
@@ -265,7 +276,7 @@ def main(
         logging_file=os.path.join(output_dir, "mlbench.log"),
         use_cuda=gpu,
         seed=42,
-        cudnn_deterministic=False,
+        cudnn_deterministic=True,
         ckpt_run_dir=ckpt_run_dir,
         delete_existing_ckpts=not validation_only,
     ):

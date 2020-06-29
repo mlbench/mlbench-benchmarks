@@ -1,10 +1,10 @@
-PyTorch WMT16 GNMT Open-MPI All-Reduce
-"""""""""""""""""""""""""""""""""""""""""""
+PyTorch WMT16 GNMT Machine Translation
+""""""""""""""""""""""""""""""""""""""
 
 GNMT implementation (adapted from https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/Translation/GNMT)
 
 :Framework: PyTorch
-:Communication Backends: Open MPI, NCCL and GLOO
+:Communication Backend: Open MPI, NCCL and GLOO (PyTorch `torch.distributed`)
 :Distribution Algorithm: All-Reduce
 :Model: GNMT
 :Dataset: WMT16

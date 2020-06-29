@@ -1,4 +1,4 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.5.0
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.5.0-new
 
 # -------------------- Debug --------------------
 RUN git clone https://github.com/NVIDIA/apex && cd apex && git checkout f3a960f && \
@@ -28,8 +28,11 @@ RUN mkdir /codes/utils
 ADD ./main.py /codes/main.py
 ADD ./utils/* /codes/utils/
 
-
+ENV NCCL_DEBUG INFO
 ENV PYTHONPATH /codes
+
+ENV NCCL_SOCKET_NTHREADS 3
+ENV NCCL_NSOCKS_PERTHREAD 2
 
 # Remove empty ld
 RUN rm $(ldconfig 2>&1 | grep 'is empty, not checked' | awk '{print $3}') 2> /dev/null || true

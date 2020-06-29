@@ -147,11 +147,11 @@ def train_loop(
     model_args["dropout"] = 0.1
     model_args["softmax_type"] = "fast_fill"
 
-    lr = 1.976e-3 if world_size <= 16 else 1.732e-3
+    lr = 1.976e-3
     optimizer_args = {
         "lr": lr,
         "eps": 1e-9,
-        "betas": (0.9, 0.98) if world_size <= 16 else (0.86, 0.92),
+        "betas": (0.9, 0.98),
     }
     scheduler_args = {"base_lr": lr, "warmup_init_lr": 0.0, "warmup_steps": 1000}
 

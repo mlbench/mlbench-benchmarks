@@ -13,32 +13,28 @@ import json
 import os
 import time
 
-from mlbench_core.controlflow.pytorch import (
-    prepare_batch,
-    record_train_batch_stats,
-    record_validation_stats,
-    validation_round,
-)
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
-    CheckpointsEvaluationControlFlow,
-)
+import torch.distributed as dist
+from torch.nn.modules.loss import CrossEntropyLoss
+from torch.optim.lr_scheduler import MultiStepLR, ReduceLROnPlateau
+from torch.utils.data import DataLoader
+
+from mlbench_core.controlflow.pytorch import (compute_train_batch_metrics,
+                                              prepare_batch,
+                                              record_train_batch_stats,
+                                              record_validation_stats,
+                                              validation_round)
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
+    CheckpointsEvaluationControlFlow
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
-from mlbench_core.evaluation.goals import (
-    task1_time_to_accuracy_goal,
-    task1_time_to_accuracy_light_goal,
-)
+from mlbench_core.evaluation.goals import (task1_time_to_accuracy_goal,
+                                           task1_time_to_accuracy_light_goal)
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
 from mlbench_core.optim.pytorch.optim import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-
-import torch.distributed as dist
-from torch.nn.modules.loss import CrossEntropyLoss
-from torch.optim.lr_scheduler import MultiStepLR
-from torch.utils.data import DataLoader
 
 
 def train_loop(
@@ -49,7 +45,6 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
-    by_layer=False,
 ):
     r"""Main logic."""
     num_parallel_workers = 2
@@ -61,6 +56,8 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
+    lr = (0.05 / 128) * batch_size * world_size
+    by_layer = False
     # Create Model
     model = ResNetCIFAR(resnet_size=20, bottleneck=False, num_classes=10, version=1)
 
@@ -68,7 +65,7 @@ def train_loop(
     optimizer = CentralizedSGD(
         world_size=world_size,
         model=model,
-        lr=0.1,
+        lr=lr,
         momentum=0.9,
         weight_decay=1e-4,
         nesterov=False,
@@ -91,7 +88,7 @@ def train_loop(
 
     # Create train/validation sets and loaders
     train_set = CIFAR10V1(dataset_dir, train=True, download=True)
-    val_set = CIFAR10V1(dataset_dir, train=False, download=True)
+    val_set = CIFAR10V1(dataset_dir, train=False, download=False)
 
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
     val_set = partition_dataset_by_rank(val_set, rank, world_size)
@@ -165,17 +162,19 @@ def train_loop(
                 tracker.record_batch_backprop()
 
                 # Aggregate gradients/parameters from all workers and apply updates to model
-                optimizer.step()
-                tracker.record_batch_opt_step()
+                optimizer.step(tracker=tracker)
 
+                metrics_results = compute_train_batch_metrics(
+                    loss.item(), output, target, metrics,
+                )
+                tracker.record_batch_comp_metrics()
                 tracker.batch_end()
 
                 record_train_batch_stats(
                     batch_idx,
                     loss.item(),
                     output,
-                    target,
-                    metrics,
+                    metrics_results,
                     tracker,
                     num_batches_per_device_train,
                 )
@@ -258,7 +257,7 @@ def main(
         logging_file=os.path.join(output_dir, "mlbench.log"),
         use_cuda=gpu,
         seed=42,
-        cudnn_deterministic=False,
+        cudnn_deterministic=True,
         ckpt_run_dir=ckpt_run_dir,
         delete_existing_ckpts=not validation_only,
     ):

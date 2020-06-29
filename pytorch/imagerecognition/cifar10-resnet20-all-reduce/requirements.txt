@@ -1,1 +1,1 @@
-mlbench-core==2.4.0.dev231
+mlbench-core==2.4.0.dev242

@@ -32,6 +32,9 @@ RUN mkdir /codes/utils
 ADD ./main.py /codes/main.py
 ADD ./utils/* /codes/utils/
 
+ENV NCCL_SOCKET_NTHREADS 3
+ENV NCCL_NSOCKS_PERTHREAD 2
+
 ENV PYTHONPATH /codes
 
 # Remove empty ld
