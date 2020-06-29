@@ -1,10 +1,10 @@
-PyTorch Cifar-10 ResNet-20 Open-MPI Scaling
-"""""""""""""""""""""""""""""""""""""""""""
+PyTorch Cifar-10 ResNet-20 All-Reduce
+"""""""""""""""""""""""""""""""""""""
 
-Resnet 20 implementation with scaling Learning Rate
+Resnet 20 implementation for CIFAR-10 using All-Reduce
 
 :Framework: PyTorch
-:Communication Backend: Open MPI (PyTorch `torch.distributed`)
+:Communication Backend: Open MPI, GLOO, NCCL (PyTorch `torch.distributed`)
 :Distribution Algorithm: All-Reduce
 :Model: ResNet-20
 :Dataset: CIFAR-10

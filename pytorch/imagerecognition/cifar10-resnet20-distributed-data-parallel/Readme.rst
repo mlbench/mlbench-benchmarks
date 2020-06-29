@@ -1,5 +1,7 @@
-PyTorch Cifar-10 ResNet-20 Open-MPI
-"""""""""""""""""""""""""""""""""""
+PyTorch Cifar-10 ResNet-20 DDP
+""""""""""""""""""""""""""""""
+
+Resnet 20 implementation for CIFAR-10 using PyTorch DDP
 
 :Framework: PyTorch
 :Communication Backend: NCCL (PyTorch `torch.distributed`)

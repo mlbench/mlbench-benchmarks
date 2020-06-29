@@ -3,6 +3,7 @@
     <br>
 .. _benchmark-implementations:
 
+=================================
 MLBench Benchmark Implementations
 =================================
 
@@ -10,26 +11,55 @@ MLBench contains several benchmark tasks and implementations. Tasks combinations
 
 For an overview of MLBench tasks, please refer to the :doc:`Benchmarking Tasks Section <mlbench-docs:benchmark-tasks>`
 
-
-Benchmark Implementations
------------------------------------------
-
 A Benchmark Implementation is a model with fixed hyperparameters that solves a Benchmark Task.
 
+Task 0: Communication Backend
+-----------------------------
 
-Image Recognition
-~~~~~~~~~~~~~~~~~
+This task is a dummy task that allows for testing the communication backends.
+
+0.a PyTorch
+^^^^^^^^^^^
+
+.. include:: ../pytorch/backend_benchmark/Readme.rst
+
+Task 1: Image Classification
+----------------------------
+
+1a. Resnet-20, CIFAR-10
+^^^^^^^^^^^^^^^^^^^^^^^
+
+.. include:: ../pytorch/imagerecognition/cifar10-resnet20-all-reduce-scaling/Readme.rst
+
+.. include:: ../pytorch/imagerecognition/cifar10-resnet20-distributed-data-parallel/Readme.rst
+
+1c. Resnet-?, ImageNet
+^^^^^^^^^^^^^^^^^^^^^^
+TODO
+
+Task 2: Linear Learning
+-----------------------
+
+2.a Logistic Regression, Epsilon 2008
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. include:: ../pytorch/linearmodels/epsilon-logistic-regression-all-reduce/Readme.rst
 
 
-1a. ResNet, CIFAR-10
-++++++++++++++++++++
+Task 3: Language Modelling
+--------------------------
 
+3.a TODO
+^^^^^^^^
 
-.. include:: ../pytorch/imagerecognition/openmpi-cifar10-resnet20-all-reduce/Readme.rst
+Task 4: Machine Translation
+---------------------------
 
-.. include:: ../pytorch/imagerecognition/openmpi-cifar10-resnet20-all-reduce-scaling/Readme.rst
+4.a LSTM, WMT16 EN-DE
+^^^^^^^^^^^^^^^^^^^^^
 
-.. include:: ../pytorch/linearmodels/openmpi-epsilon-logistic-regression-all-reduce/Readme.rst
+.. include:: ../pytorch/translation/wmt16-gnmt-all-reduce/Readme.rst
 
-.. include:: ../tensorflow/imagerecognition/openmpi-cifar10-resnet20-all-reduce/Readme.rst
+4.b Transformer, WMT17 EN-DE
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+.. include:: ../pytorch/translation/wmt17-transformer-all-reduce/Readme.rst
