@@ -3,7 +3,7 @@ PyTorch Cifar-10 ResNet-20 DDP
 
 Resnet 20 implementation for CIFAR-10 using PyTorch DDP
 
-:Task: `Task 1a <https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-resnet-20-cifar-10>`_
+:Task: :ref:`Task 1a <mlbench-docs:benchmark-task-1a>`
 :Framework: PyTorch
 :Communication Backend: NCCL (PyTorch `torch.distributed`)
 :Distribution Algorithm: Distributed Data Parallel
