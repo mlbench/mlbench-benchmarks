@@ -1,7 +1,7 @@
 PyTorch WMT16 GNMT Machine Translation
 """"""""""""""""""""""""""""""""""""""
 
-GNMT implementation (adapted from https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/Translation/GNMT)
+GNMT implementation (adapted from `NVIDIA's implementation <https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/Translation/GNMT>`_
 
 :Task: :ref:`Task 4a <mlbench-docs:benchmark-task-4a>`
 :Framework: PyTorch
