@@ -39,7 +39,7 @@ jobs:
         - docker
       install: true
       script:
-        - docker build -t pytorch-wmt17-transformer-all-reduce:travis-ci-test ./pytorch/translation/wmt17-transformer-all-reduce
+        - docker build -t pytorch-wmt17-transformer-all-reduce:travis-ci-test ./pytorch/nlp/translation/wmt17-transformer-all-reduce
 
     - stage: build pytorch-openmpi-wikitext2-rnn-lm
       language: bash
@@ -49,7 +49,7 @@ jobs:
         - docker
       install: true
       script:
-        - docker build -t pytorch-openmpi-wikitext2-rnn-lm:travis-ci-test ./pytorch/nlp/openmpi-wikitext2-rnn-lm
+        - docker build -t pytorch-openmpi-wikitext2-rnn-lm:travis-ci-test ./pytorch/nlp/language-modelling/openmpi-wikitext2-rnn-lm
 
     - stage: build pytorch-wmt16-gnmt-all-reduce
       language: bash
@@ -59,7 +59,7 @@ jobs:
         - docker
       install: true
       script:
-        - docker build -t pytorch-wmt16-gnmt-all-reduce:travis-ci-test ./pytorch/translation/wmt16-gnmt-all-reduce
+        - docker build -t pytorch-wmt16-gnmt-all-reduce:travis-ci-test ./pytorch/nlp/translation/wmt16-gnmt-all-reduce
 
     - stage: build tensorflow-base
       language: bash
