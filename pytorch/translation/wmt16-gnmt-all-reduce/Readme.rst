@@ -3,6 +3,7 @@ PyTorch WMT16 GNMT Machine Translation
 
 GNMT implementation (adapted from https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/Translation/GNMT)
 
+:Task: :ref:`Task 4a <mlbench-docs:benchmark-task-4a>`
 :Framework: PyTorch
 :Communication Backend: Open MPI, NCCL and GLOO (PyTorch `torch.distributed`)
 :Distribution Algorithm: All-Reduce

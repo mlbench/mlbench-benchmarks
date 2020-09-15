@@ -3,6 +3,7 @@ PyTorch PASCAL Challenge 2008 Logistic Regression
 
 Logistic Regression implementation
 
+:Task: :ref:`Task 2a <mlbench-docs:benchmark-task-2a>`
 :Framework: PyTorch
 :Communication Backend: Open MPI, GLOO (PyTorch `torch.distributed`)
 :Distribution Algorithm: All-Reduce

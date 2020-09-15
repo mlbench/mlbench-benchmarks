@@ -16,10 +16,10 @@ A Benchmark Implementation is a model with fixed hyperparameters that solves a B
 Task 0: Communication Backend
 -----------------------------
 
-This task is a dummy task that allows for testing the communication backends.
+This task is a dummy task that allows for testing the communication backends for various operations and frameworks.
 
-0.a PyTorch
-^^^^^^^^^^^
+0.a PyTorch All-reduce
+^^^^^^^^^^^^^^^^^^^^^^
 
 .. include:: ../pytorch/backend_benchmark/Readme.rst
 
@@ -33,7 +33,7 @@ Task 1: Image Classification
 
 .. include:: ../pytorch/imagerecognition/cifar10-resnet20-distributed-data-parallel/Readme.rst
 
-1c. Resnet-?, ImageNet
+1b. Resnet-?, ImageNet
 ^^^^^^^^^^^^^^^^^^^^^^
 TODO
 

@@ -3,6 +3,7 @@ PyTorch Cifar-10 ResNet-20 All-Reduce
 
 Resnet 20 implementation for CIFAR-10 using All-Reduce
 
+:Task: :ref:`Task 1a <mlbench-docs:benchmark-task-1a>`
 :Framework: PyTorch
 :Communication Backend: Open MPI, GLOO, NCCL (PyTorch `torch.distributed`)
 :Distribution Algorithm: All-Reduce
