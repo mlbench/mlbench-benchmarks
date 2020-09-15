@@ -11,7 +11,7 @@ RUN HOROVOD_GPU_ALLREDUCE=MPI HOROVOD_GPU_BROADCAST=MPI \
     HOROVOD_WITH_MPI=1\
     pip install --no-cache-dir horovod
 
-ADD requirements.txt /requirements.txt
+ADD ./requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
 ENV MLBENCH_INSTALL_DIR /conda/lib/python3.7/site-packages/mlbench_core
@@ -25,7 +25,7 @@ RUN python $MLBENCH_INSTALL_DIR/install_cuda_extensions.py build && \
 RUN mkdir /codes
 RUN mkdir /codes/utils
 
-ADD main.py /codes/main.py
+ADD ./main.py /codes/main.py
 ADD ./utils/* /codes/utils/
 
 ENV NCCL_DEBUG INFO
