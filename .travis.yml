@@ -49,7 +49,7 @@ jobs:
         - docker
       install: true
       script:
-        - docker build -t pytorch-openmpi-wikitext2-rnn-lm:travis-ci-test ./pytorch/nlp/language-modelling/openmpi-wikitext2-rnn-lm
+        - docker build -t pytorch-openmpi-wikitext2-rnn-lm:travis-ci-test ./pytorch/nlp/language-modeling/openmpi-wikitext2-rnn-lm
 
     - stage: build pytorch-wmt16-gnmt-all-reduce
       language: bash
