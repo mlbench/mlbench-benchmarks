@@ -57,9 +57,9 @@ Task 4: Machine Translation
 4.a LSTM, WMT16 EN-DE
 ^^^^^^^^^^^^^^^^^^^^^
 
-.. include:: ../pytorch/translation/wmt16-gnmt-all-reduce/Readme.rst
+.. include:: ../pytorch/nlp/translation/wmt16-gnmt-all-reduce/Readme.rst
 
 4.b Transformer, WMT17 EN-DE
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. include:: ../pytorch/translation/wmt17-transformer-all-reduce/Readme.rst
+.. include:: ../pytorch/nlp/translation/wmt17-transformer-all-reduce/Readme.rst

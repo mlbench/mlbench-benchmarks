@@ -88,22 +88,33 @@ def verify_communication(use_horovod, world_size):
     if use_horovod:
         hvd.init()
         logger.info("Using horovod, rank = {}".format(hvd.rank()))
-        tensor = torch.tensor([1], device=torch.device("cuda" if dist.get_backend() == dist.Backend.NCCL else "cpu"))
+        tensor = torch.tensor(
+            [1],
+            device=torch.device(
+                "cuda" if dist.get_backend() == dist.Backend.NCCL else "cpu"
+            ),
+        )
         res = hvd.allreduce(tensor, op=hvd.Sum)
         assert res[0] == world_size, "Communication is not working"
     else:
         logger.info("Using torch, rank={}".format(dist.get_rank()))
-        tensor = torch.tensor([1], device=torch.device("cuda" if dist.get_backend() == dist.Backend.NCCL else "cpu"))
+        tensor = torch.tensor(
+            [1],
+            device=torch.device(
+                "cuda" if dist.get_backend() == dist.Backend.NCCL else "cpu"
+            ),
+        )
         dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         assert tensor[0] == world_size, "Communication is not working"
     if hvd:
-        logger.info("NCCL Built={}, MPI Built={} , GLOO Built={}".format(hvd.nccl_built(), hvd.mpi_built(), hvd.gloo_built()))
+        logger.info(
+            "NCCL Built={}, MPI Built={} , GLOO Built={}".format(
+                hvd.nccl_built(), hvd.mpi_built(), hvd.gloo_built()
+            )
+        )
 
 
-def train_loop(
-        run_id,
-        use_horovod=False
-):
+def train_loop(run_id, use_horovod=False, gpu=False):
     world_size = dist.get_world_size()
     rank = dist.get_rank()
     # Define size range and number of samples to gather
@@ -124,53 +135,57 @@ def train_loop(
     tracker.validation_start()
 
     # Perform benchmark on both GPU and CPU (except for NCCL)
-    use_cudas = [True] if is_nccl else [False, True]
+    if is_nccl and not gpu:
+        raise ValueError("Cannot run NCCL without GPU")
+
+    use_cudas = [True] if is_nccl else [gpu]
     for j, size in enumerate(size_range):
         size = int(size)
         for use_cuda in use_cudas:
-            avg = get_communication_average(size, torch.float32, use_cuda, num_samples, use_horovod)
+            avg = get_communication_average(
+                size, torch.float32, use_cuda, num_samples, use_horovod
+            )
             tracker.record_stat("tensor_size", size, log_to_api=True)
             tracker.record_stat("dtype", 32, log_to_api=True)
             tracker.record_stat("cuda", 1 if use_cuda else 0, log_to_api=True)
             tracker.record_stat("avg_time", avg, log_to_api=True)
-            logger.info("Size={}, dtype=float32, use_cuda={}, avg_time={}".format(size, use_cuda, avg))
+            logger.info(
+                "Size={}, dtype=float32, use_cuda={}, avg_time={}".format(
+                    size, use_cuda, avg
+                )
+            )
 
             if do_fp16:
-                avg = get_communication_average(size, torch.float16, use_cuda, num_samples, use_horovod)
+                avg = get_communication_average(
+                    size, torch.float16, use_cuda, num_samples, use_horovod
+                )
                 tracker.record_stat("tensor_size", size, log_to_api=True)
                 tracker.record_stat("dtype", 16, log_to_api=True)
                 tracker.record_stat("cuda", 1 if use_cuda else 0, log_to_api=True)
                 tracker.record_stat("avg_time", avg, log_to_api=True)
-                logger.info("Size={}, dtype=float16, use_cuda={}, avg_time={}".format(size, use_cuda, avg))
+                logger.info(
+                    "Size={}, dtype=float16, use_cuda={}, avg_time={}".format(
+                        size, use_cuda, avg
+                    )
+                )
     tracker.validation_end()
     time.sleep(10)
 
 
-def main(
-        run_id,
-        output_dir,
-        rank,
-        backend,
-        hosts,
-        use_horovod=False,
-        gpu=False
-):
+def main(run_id, output_dir, rank, backend, hosts, use_horovod=False, gpu=False):
     r"""Main logic."""
     with initialize_backends(
-            comm_backend=backend,
-            hosts=hosts,
-            rank=rank,
-            logging_level="INFO",
-            logging_file=os.path.join(output_dir, "mlbench.log"),
-            use_cuda=gpu,
-            seed=42,
-            cudnn_deterministic=False,
-            delete_existing_ckpts=True,
+        comm_backend=backend,
+        hosts=hosts,
+        rank=rank,
+        logging_level="INFO",
+        logging_file=os.path.join(output_dir, "mlbench.log"),
+        use_cuda=gpu,
+        seed=42,
+        cudnn_deterministic=False,
+        delete_existing_ckpts=True,
     ):
-        train_loop(
-            run_id=run_id,
-            use_horovod=use_horovod
-        )
+        train_loop(run_id=run_id, use_horovod=use_horovod, gpu=gpu)
 
 
 if __name__ == "__main__":
