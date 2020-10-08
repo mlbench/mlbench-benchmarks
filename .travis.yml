@@ -1,93 +1,61 @@
-# Config file for automatic testing at travis-ci.org
+os: linux
+dist: xenial
+
+language: shell
+services:
+  - docker
+
+_shared_job: &shared_job
+  script:
+    - docker build -t ${IMAGE_NAME}:travis-ci-test ${IMAGE_DIR}
+
+
 jobs:
   include:
-    - stage: build pytorch-cifar10-resnet20-all-reduce
-      language: bash
-      sudo: required
+    - name: "Build PyTorch CIFAR10 ResNet-20"
+      env:
+        - IMAGE_NAME=pytorch-cifar10-resnet20-all-reduce
+        - IMAGE_DIR=./pytorch/imagerecognition/cifar10-resnet20-all-reduce
+      <<: *shared_job
 
-      services:
-        - docker
-      install: true
-      script:
-        - docker build -t pytorch-cifar10-resnet20-all-reduce:travis-ci-test ./pytorch/imagerecognition/cifar10-resnet20-all-reduce
+    - name: "Build PyTorch CIFAR10 ResNet-20 (Scaling)"
+      env:
+        - IMAGE_NAME=pytorch-cifar10-resnet20-all-reduce-scaling
+        - IMAGE_DIR=./pytorch/imagerecognition/cifar10-resnet20-all-reduce-scaling
+      <<: *shared_job
 
-    - stage: build pytorch-cifar10-resnet20-all-reduce-scaling
-      language: bash
-      sudo: required
+    - name: "Build PyTorch Epsilon Logistic Regression"
+      env:
+        - IMAGE_NAME=pytorch-epsilon-logistic-regression-all-reduce
+        - IMAGE_DIR=./pytorch/linearmodels/epsilon-logistic-regression-all-reduce
+      <<: *shared_job
 
-      services:
-        - docker
-      install: true
-      script:
-        - docker build -t pytorch-cifar10-resnet20-all-reduce-scaling:travis-ci-test ./pytorch/imagerecognition/cifar10-resnet20-all-reduce-scaling
+    - name: "Build PyTorch WMT16 GNMT"
+      env:
+        - IMAGE_NAME=pytorch-wmt16-gnmt-all-reduce
+        - IMAGE_DIR=./pytorch/nlp/translation/wmt16-gnmt-all-reduce
+      <<: *shared_job
 
-    - stage: build pytorch-epsilon-logistic-regression-all-reduce
-      language: bash
-      sudo: required
+    - name: "Build PyTorch WMT17 Transformer"
+      env:
+        - IMAGE_NAME=pytorch-wmt17-transformer-all-reduce
+        - IMAGE_DIR=./pytorch/nlp/translation/wmt17-transformer-all-reduce
+      <<: *shared_job
 
-      services:
-        - docker
-      install: true
-      script:
-        - docker build -t pytorch-epsilon-logistic-regression-all-reduce:travis-ci-test ./pytorch/linearmodels/epsilon-logistic-regression-all-reduce
+    - name: "Build PyTorch Wikitext2 RNN"
+      env:
+        - IMAGE_NAME=pytorch-openmpi-wikitext2-rnn-lm
+        - IMAGE_DIR=./pytorch/nlp/language-modeling/openmpi-wikitext2-rnn-lm
+      <<: *shared_job
 
-    - stage: build pytorch-wmt17-transformer-all-reduce
-      language: bash
-      sudo: required
+    - name: "Build Tensorflow base"
+      env:
+        - IMAGE_NAME=mlbench-tensorflow-base
+        - IMAGE_DIR=./tensorflow/base/
+      <<: *shared_job
 
-      services:
-        - docker
-      install: true
-      script:
-        - docker build -t pytorch-wmt17-transformer-all-reduce:travis-ci-test ./pytorch/nlp/translation/wmt17-transformer-all-reduce
-
-    - stage: build pytorch-openmpi-wikitext2-rnn-lm
-      language: bash
-      sudo: required
-
-      services:
-        - docker
-      install: true
-      script:
-        - docker build -t pytorch-openmpi-wikitext2-rnn-lm:travis-ci-test ./pytorch/nlp/language-modeling/openmpi-wikitext2-rnn-lm
-
-    - stage: build pytorch-wmt16-gnmt-all-reduce
-      language: bash
-      sudo: required
-
-      services:
-        - docker
-      install: true
-      script:
-        - docker build -t pytorch-wmt16-gnmt-all-reduce:travis-ci-test ./pytorch/nlp/translation/wmt16-gnmt-all-reduce
-
-    - stage: build tensorflow-base
-      language: bash
-      sudo: required
-
-      services:
-        - docker
-      install: true
-      script:
-        - docker build -t mlbench-tensorflow-base:travis-ci-test ./tensorflow/base/
-
-    - stage: build tensorflow-openmpi-cifar10-resnet20-all-reduce
-      language: bash
-      sudo: required
-
-      services:
-        - docker
-      install: true
-      script:
-        - docker build -t tensorflow-openmpi-cifar10-resnet20-all-reduce:travis-ci-test ./tensorflow/imagerecognition/openmpi-cifar10-resnet20-all-reduce
-
-
-stages:
-  - build pytorch-cifar10-resnet20-all-reduce
-  - build pytorch-cifar10-resnet20-all-reduce-scaling
-  - build pytorch-epsilon-logistic-regression-all-reduce
-  - build pytorch-wmt17-transformer-all-reduce
-  - build pytorch-openmpi-wikitext2-rnn-lm
-  - build pytorch-wmt16-gnmt-all-reduce
-  - build tensorflow-openmpi-cifar10-resnet20-all-reduce
-  - build tensorflow-base
+    - name: "Build Tensorflow CIFAR10 ResNet-20"
+      env:
+        - IMAGE_NAME=tensorflow-openmpi-cifar10-resnet20-all-reduce
+        - IMAGE_DIR=./tensorflow/imagerecognition/openmpi-cifar10-resnet20-all-reduce
+      <<: *shared_job
