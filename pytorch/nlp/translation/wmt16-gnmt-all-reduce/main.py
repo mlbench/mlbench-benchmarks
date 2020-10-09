@@ -12,6 +12,14 @@ import time
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader
+from utils import (
+    build_optimizer,
+    compute_loss,
+    compute_model_output,
+    opt_step,
+    prepare_batch,
+    validation_round,
+)
 
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
     CheckpointsEvaluationControlFlow,
@@ -31,14 +39,6 @@ from mlbench_core.models.pytorch.gnmt import GNMT, Translator
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-from utils import (
-    build_optimizer,
-    compute_loss,
-    compute_model_output,
-    opt_step,
-    prepare_batch,
-    validation_round,
-)
 
 try:
     import horovod.torch as hvd
@@ -46,12 +46,6 @@ except ImportError as e:
     hvd = None
 
 logger = logging.getLogger("mlbench")
-
-
-def get_learning_rate(global_batch_size, xy1=(2048, 2e-3), xy2=(8192, 4e-3)):
-    a = (xy1[1] - xy2[1]) / (xy1[0] - xy2[0])
-    b = xy1[1] - xy1[0] * a
-    return global_batch_size * a + b
 
 
 def train_loop(
@@ -70,16 +64,17 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    train_epochs = 8 if world_size <= 16 else 12
+    train_epochs = 8
     train_min_len, train_max_len = 0, 75
     val_min_len, val_max_len = 0, 150
     math_mode = "fp16"  # One of `fp16`, `fp32` or `amp_fp16`
     lang = ("en", "de")
 
     # Training
-    update_freq = max(16 // world_size, 1)
-    train_batch_size = 128
-    train_global_batch_size = update_freq * world_size * train_batch_size
+    train_global_batch_size = 2048  # Global batch size
+    max_bs = 128  # Max batch size for used hardware
+    update_freq = int(max(1, train_global_batch_size // (max_bs * world_size)))
+    train_batch_size = int(train_global_batch_size // (world_size * update_freq))
     val_batch_size = 64
 
     # Model attributes
@@ -99,7 +94,7 @@ def train_loop(
 
     # Optimizer
     optimizer_args = {
-        "lr": get_learning_rate(train_global_batch_size),
+        "lr": 2e-3,
         "grad_clip": 5.0,
     }
 
