@@ -10,10 +10,19 @@ import os
 import time
 from copy import deepcopy
 
-import numpy as np
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader
+from utils import (
+    Arguments,
+    build_optimizer,
+    compute_loss,
+    equalize_batches,
+    get_full_batch_size,
+    opt_step,
+    prepare_batch,
+    validation_round,
+)
 
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
     CheckpointsEvaluationControlFlow,
@@ -32,15 +41,6 @@ from mlbench_core.models.pytorch.transformer import SequenceGenerator, Transform
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-from utils import (
-    Arguments,
-    build_optimizer,
-    compute_loss,
-    get_full_batch_size,
-    opt_step,
-    prepare_batch,
-    validation_round,
-)
 
 try:
     import horovod.torch as hvd
@@ -48,44 +48,7 @@ except ImportError as e:
     hvd = None
 
 
-def equalize_batches(batches, world_size, seed):
-    """Given a list of batches, makes sure each workers has equal number
-    by adding new batches using bootstrap sampling
-
-    Args:
-        batches (list): The list of batches
-        world_size (int): Distributed world size
-        seed (int): Random seed to use (must be the same across all workers)
-
-    Returns:
-        (list): The new extended batches
-    """
-    to_add = world_size - (len(batches) % world_size)
-    if to_add == 0:
-        return batches
-    np.random.seed(seed)
-    bootstrapped = np.random.choice(np.arange(len(batches)), size=to_add)
-
-    to_add = [batches[i] for i in bootstrapped]
-    return batches + to_add
-
-
-def get_max_tokens(world_size, update_freq, max_tokens_batch=2 ** 17):
-    """Returns the max number of tokens a batch should have
-
-    Args:
-        world_size (int): Distributed world size
-        update_freq (int): Update frequency (min 1)
-        max_tokens_batch (int): Max tokens per batch over all workers
-
-    Returns:
-        (int): The max number of tokens per batch per worker
-    """
-    return int(max_tokens_batch / (world_size * update_freq))
-
-
 logger = logging.getLogger("mlbench")
-
 
 DEFAULT_TRANSFORMER_ARCH = {
     "max_source_positions": 256,
@@ -132,8 +95,11 @@ def train_loop(
     world_size = dist.get_world_size()
 
     # Dataset arguments
-    update_freq = max(16 // world_size, 1)
-    max_tokens = get_max_tokens(world_size, update_freq)
+    train_global_batch_size = 2 ** 17  # Global batch size
+    max_bs = 2 ** 13  # Max batch size for used hardware
+    update_freq = int(max(1, train_global_batch_size // (max_bs * world_size)))
+    max_tokens = int(train_global_batch_size // (world_size * update_freq))
+
     max_source_positions, max_target_positions = 80, 80
     seq_len_multiple = 2
     left_pad = (True, False)
@@ -384,7 +350,12 @@ def train_loop(
             )
             is_best = record_validation_stats(metric_values, loss, tracker, rank)
             checkpointer.save(
-                tracker, model, optimizer, scheduler, tracker.current_epoch, is_best,
+                tracker,
+                model,
+                optimizer,
+                scheduler,
+                tracker.current_epoch,
+                is_best,
             )
             tracker.epoch_end()
 

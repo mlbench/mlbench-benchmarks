@@ -1,5 +1,3 @@
-import logging
-
 import torch
 from apex import amp
 from torch.optim import Adam
@@ -11,9 +9,6 @@ from mlbench_core.optim.pytorch.fp_optimizers import (
 )
 from mlbench_core.utils import AverageMeter
 from mlbench_core.utils.pytorch.distributed import global_average
-
-logger = logging.getLogger("mlbench")
-LOG_EVERY_N_BATCHES = 25
 
 
 def build_optimizer(
@@ -84,7 +79,7 @@ def prepare_batch(data, target, use_cuda=False):
 
 
 def compute_model_output(model, src, trg):
-    """ Computes output of GNMT model
+    """Computes output of GNMT model
 
     Args:
         model (`obj`:torch.nn.Module): The GNMT Model
@@ -97,7 +92,7 @@ def compute_model_output(model, src, trg):
 
 
 def compute_loss(src, trg, output, loss_func, iter_size):
-    """ Computes the Loss of a given input and output
+    """Computes the Loss of a given input and output
 
     Args:
         src (tuple): Source data point. Should be tuple of (tokens, lengths)

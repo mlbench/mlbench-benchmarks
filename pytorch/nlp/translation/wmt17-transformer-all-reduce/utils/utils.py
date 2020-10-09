@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from apex.optimizers.fused_adam import FusedAdam
 from torch import distributed as dist
@@ -222,3 +223,25 @@ def prepare_batch(sample, use_cuda=False):
         return _move_to_cuda(sample)
     else:
         return sample
+
+
+def equalize_batches(batches, world_size, seed):
+    """Given a list of batches, makes sure each workers has equal number
+    by adding new batches using bootstrap sampling
+
+    Args:
+        batches (list): The list of batches
+        world_size (int): Distributed world size
+        seed (int): Random seed to use (must be the same across all workers)
+
+    Returns:
+        (list): The new extended batches
+    """
+    to_add = world_size - (len(batches) % world_size)
+    if to_add == 0:
+        return batches
+    np.random.seed(seed)
+    bootstrapped = np.random.choice(np.arange(len(batches)), size=to_add)
+
+    to_add = [batches[i] for i in bootstrapped]
+    return batches + to_add
