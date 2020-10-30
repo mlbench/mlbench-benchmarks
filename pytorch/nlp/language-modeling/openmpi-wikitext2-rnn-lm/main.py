@@ -6,28 +6,36 @@ for more details.
 .. code-block:: bash
     mpirun -n 2 --oversubscribe python resnet_cifar10_mpi.py --run_id 1
 """
-import argparse
 import logging
 import os
 import time
 
-import torch
 import torch.distributed as dist
 import torchtext
-from mlbench_core.dataset.nlp.pytorch import Wikitext2
+from torch.nn.modules.loss import CrossEntropyLoss
+from torch.utils.data import DataLoader
+from torchtext.data.utils import get_tokenizer
+
+from mlbench_core.controlflow.pytorch.controlflow import (
+    compute_train_batch_metrics,
+    record_train_batch_stats,
+    record_validation_stats,
+)
+from mlbench_core.controlflow.task_args import task_main
+from mlbench_core.dataset.nlp.pytorch import BPTTWikiText2
+from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import (
-    task3_time_to_preplexity_light_goal,
     task3_time_to_preplexity_goal,
+    task3_time_to_preplexity_light_goal,
 )
 from mlbench_core.evaluation.pytorch.metrics import Perplexity
 from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
 from mlbench_core.models.pytorch.nlp import RNNLM
-from mlbench_core.optim.pytorch.centralized import CentralizedSGD
-from mlbench_core.utils import Tracker, AverageMeter
+from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
-from mlbench_core.utils.pytorch.distributed import global_average
-from torch.nn.modules.loss import CrossEntropyLoss
-from torch.nn.utils import clip_grad_norm_
+from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
+
+from .utils.utils import build_optimizer, prepare_batch, validation_round
 
 LOG_EVERY_N_BATCHES = 25
 logger = logging.getLogger("mlbench")
@@ -41,48 +49,68 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
-    by_layer=False,
+    seed=42,
 ):
     """Train loop"""
-    num_parallel_workers = 2
-    max_batch_per_epoch = None
     train_epochs = 164
-    batch_size = 256
-    rnn_n_hidden = 200
-    rnn_n_layers = 2
+    batch_size = 128
+    rnn_n_hidden = 1000
+    rnn_n_layers = 3
     rnn_tie_weights = True
     rnn_clip = 0.25
-    rnn_bptt_len = 35
-    drop_rate = 0.0
+    drop_rate = 0.1
     rnn_weight_norm = False
-    dtype = "fp32"
+
+    bptt_len = 30
+    lr = 0.001
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    train_set = Wikitext2(dataset_dir, download=True, train=True)
-    val_set = Wikitext2(
-        dataset_dir, text_field=train_set.text_field, download=False, train=False
+    optimizer_args = {
+        "lr": lr,
+        "momentum": 0.9,
+        "weight_decay": 1e-4,
+        "nesterov": False,
+    }
+
+    scheduler_args = {
+        "gamma": 0.1,
+        "milestones": [150, 225],
+        "warmup_duration": 5,
+        "warmup_init_lr": 0,
+        "scaled_lr": lr * world_size,
+    }
+
+    tokenizer = get_tokenizer("spacy")
+    train_set = BPTTWikiText2(
+        bptt_len, train=True, tokenizer=tokenizer, root=dataset_dir
+    )
+    val_set = BPTTWikiText2(
+        bptt_len, train=False, tokenizer=tokenizer, root=dataset_dir
     )
 
-    train_set.text_field.build_vocab(train_set, vectors=None, vectors_cache=None)
+    train_set = partition_dataset_by_rank(train_set, rank, world_size, shuffle=False)
+    val_set = partition_dataset_by_rank(val_set, rank, world_size, shuffle=False)
 
-    train_loader, _ = torchtext.data.BPTTIterator.splits(
-        (train_set, val_set),
-        batch_size=batch_size * world_size,
-        bptt_len=rnn_bptt_len,
-        device="cuda:0" if use_cuda else None,
-        repeat=False,
-        shuffle=True,
-    )
-    _, val_loader = torchtext.data.BPTTIterator.splits(
-        (train_set, val_set),
+    num_dataloader_workers = 2
+    train_loader = DataLoader(
+        train_set,
         batch_size=batch_size,
-        bptt_len=rnn_bptt_len,
-        device="cuda:0" if use_cuda else None,
         shuffle=False,
+        num_workers=num_dataloader_workers,
+        pin_memory=use_cuda,
+        drop_last=True,
     )
 
+    val_loader = DataLoader(
+        val_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_dataloader_workers,
+        pin_memory=use_cuda,
+        drop_last=True,
+    )
     n_tokens, emb_size = len(train_set.text_field.vocab), rnn_n_hidden
 
     model = RNNLM(
@@ -95,28 +123,15 @@ def train_loop(
         weight_norm=rnn_weight_norm,
     )
 
-    optimizer = CentralizedSGD(
-        world_size=world_size,
-        model=model,
-        lr=0.2,
-        momentum=0.9,
-        weight_decay=1e-4,
-        nesterov=False,
-        use_cuda=dist.get_backend() == dist.Backend.NCCL,
-        by_layer=by_layer,
+    fp_optimizer, optimizer = build_optimizer(
+        model,
+        world_size,
+        optimizer_args=optimizer_args,
+        grad_clip=rnn_clip,
+        use_cuda=use_cuda,
     )
-
     # Create a learning rate scheduler for an optimizer
-    scheduler = MultistepLearningRatesWithWarmup(
-        optimizer,
-        world_size=world_size,
-        milestones=[82, 109],
-        gamma=0.1,
-        lr=0.1,
-        warmup_duration=5,
-        warmup_linear_scaling=True,
-        warmup_init_lr=None,
-    )
+    scheduler = MultistepLearningRatesWithWarmup(optimizer, **scheduler_args)
 
     # A loss_function for computing the loss
     loss_function = CrossEntropyLoss(reduction="mean")
@@ -127,6 +142,9 @@ def train_loop(
 
     # Metrics like Top 1/5 Accuracy
     metrics = [Perplexity()]
+    checkpointer = Checkpointer(
+        ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.BEST
+    )
 
     if light_target:
         goal = task3_time_to_preplexity_light_goal
@@ -136,176 +154,91 @@ def train_loop(
     tracker = Tracker(metrics, run_id, rank, goal=goal)
 
     dist.barrier()
-
     tracker.start()
 
-    num_batches_per_device_train = len(train_loader)
-
     for epoch in range(0, train_epochs):
-        _hidden = model.init_hidden(batch_size)
 
+        model.train()
+        tracker.train()
+        hidden = model.init_hidden(batch_size)
+
+        num_batches_per_device_train = len(train_loader)
         # configure local step.
-        for batch_idx, batch in enumerate(train_loader):
-            model.train()
+        for batch_idx, (data, target) in enumerate(train_loader):
+            tracker.batch_start()
 
-            tracker.train()
-            scheduler.step()
+            hidden = model.repackage_hidden(hidden)
+            # train_input, train_target, hidden = prepare_batch(batch,
+            #                                                    batch_size=batch_size,
+            #                                                    rank=rank,
+            #                                                    model=model,
+            #                                                    _hidden=hidden)
 
-            input = batch.text[
-                :, rank * batch_size : (rank + 1) * batch_size,
-            ]
-            target = batch.target[
-                :, rank * batch_size : (rank + 1) * batch_size,
-            ]
-
-            # repackage the hidden.
-            _hidden = model.repackage_hidden(_hidden)
+            tracker.record_batch_load()
 
             # inference and get current performance.
-            tracker.batch_start()
-            optimizer.zero_grad()
+            # Init optimizer
+            fp_optimizer.zero_grad()
+            tracker.record_batch_init()
 
-            tracker.record_batch_step("init")
+            output, hidden = model(data, hidden)
+            tracker.record_batch_fwd_pass()
 
-            output, _hidden = model(input, _hidden)
+            loss = loss_function(output, target)
+            tracker.record_batch_comp_loss()
 
-            tracker.record_batch_step("forward")
-
-            loss = loss_function(
-                output.view(-1, n_tokens), target.contiguous().view(-1)
-            )
-
-            tracker.record_batch_step("loss")
-
-            loss.backward()
-
-            tracker.record_batch_step("backward")
+            fp_optimizer.backward_loss(loss)
+            tracker.record_batch_backprop()
 
             # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
-            clip_grad_norm_(model.parameters(), rnn_clip)
-            optimizer.step()
+            updated = fp_optimizer.step(tracker=tracker)
+            if updated:
+                scheduler.step()
+
+            metrics_results = compute_train_batch_metrics(
+                loss.item(),
+                output,
+                target,
+                metrics,
+            )
+            tracker.record_batch_comp_metrics()
+
             tracker.batch_end()
 
-            progress = batch_idx / num_batches_per_device_train
-
-            log_to_api = (
-                batch_idx % LOG_EVERY_N_BATCHES == 0
-                or batch_idx == num_batches_per_device_train
+            record_train_batch_stats(
+                batch_idx,
+                loss.item(),
+                output,
+                metrics_results,
+                tracker,
+                num_batches_per_device_train,
             )
 
-            for metric in metrics:
-                metric_value = metric(loss, output, target).item()
+        metrics_averages, loss_average = validation_round(
+            val_loader,
+            model,
+            batch_size,
+            n_tokens,
+            metrics=metrics,
+            loss_function=loss_function,
+            tracker=tracker,
+        )
 
-                if tracker:
-                    tracker.record_metric(
-                        metric, metric_value, output.size()[0], log_to_api=log_to_api
-                    )
-
-            status = "Epoch {:5.2f} Batch {:4}: ".format(progress, batch_idx)
-
-            logger.info(status + str(tracker))
-
-            tracker.record_loss(loss, 1, log_to_api=True)
-
-        # finish one epoch training and to decide if we want to val our model.
-        tracker.validation()
-        tracker.validation_start()
-
-        # each worker finish one epoch training.
-        model.eval()
-
-        losses = AverageMeter()
-        for metric in metrics:
-            metric.reset()
-
-        # Each worker computer their own losses and metrics
-        with torch.no_grad():
-
-            _hidden = model.init_hidden(batch_size)
-
-            for batch in val_loader:
-                _hidden = model.repackage_hidden(_hidden)
-                input, target = batch.text, batch.target
-                # Inference
-                output, _hidden = model(input, _hidden)
-
-                # Compute loss
-                loss = loss_function(
-                    output.view(-1, n_tokens), target.contiguous().view(-1)
-                )
-
-                # Update loss
-                losses.update(loss.item(), input.size(0))
-
-                # Update metrics
-                for metric in metrics:
-                    metric_value = metric(loss, output, target)
-                    metric.update(metric_value, input.size(0))
-
-        # Aggregate metrics and loss for all workers
-        metrics_averages = {metric: metric.average().item() for metric in metrics}
-        loss_average = global_average(losses.sum, losses.count).item()
-        tracker.validation_end()
-
-        for metric, value in metrics_averages.items():
-            tracker.record_metric(metric, value, log_to_api=True)
-
-            global_metric_value = global_average(value, 1).item()
-
-            if rank == 0:
-                tracker.record_stat(
-                    "global_{}".format(metric.name),
-                    global_metric_value,
-                    log_to_api=True,
-                )
-
-        if rank == 0:
-            logger.info(
-                "{} for rank {}:(best epoch {}, current epoch {}): {:.3f}".format(
-                    tracker.primary_metric.name,
-                    tracker.rank,
-                    tracker.best_epoch,
-                    tracker.current_epoch,
-                    tracker.best_metric_value,
-                )
-            )
-
-        tracker.record_loss(loss, log_to_api=True)
-
-        global_loss = global_average(loss_average, 1).item()
-
-        if rank == 0:
-            tracker.record_stat("global_loss", global_loss, log_to_api=True)
-        tracker.validation_end()
-
+        is_best = record_validation_stats(metrics_averages, loss_average, tracker, rank)
+        checkpointer.save(
+            tracker,
+            model,
+            optimizer,
+            scheduler,
+            tracker.current_epoch,
+            is_best,
+        )
         tracker.epoch_end()
 
         if tracker.goal_reached:
             print("Goal Reached!")
             time.sleep(10)
             return
-        # train_round(train_loader, model, optimizer, loss_function, metrics,
-        #             scheduler, 'fp32', schedule_per='epoch',
-        #             transform_target_type=None, use_cuda=use_cuda,
-        #             max_batch_per_epoch=max_batch_per_epoch,
-        #             tracker=tracker)
-
-        # is_best = validation_round(val_loader, model,  loss_function,
-        #                            metrics, run_id, rank, 'fp32',
-        #                            transform_target_type=None,
-        #                            use_cuda=use_cuda,
-        #                            max_batch_per_epoch=max_batch_per_epoch,
-        #                            tracker=tracker)
-
-        # checkpointer.save(tracker, model,
-        #                   optimizer, scheduler,
-        #                   tracker.current_epoch, is_best)
-
-        # tracker.epoch_end()
-
-        # if tracker.goal_reached:
-        #     print("Goal Reached!")
-        #     return
 
 
 def main(
@@ -313,6 +246,9 @@ def main(
     dataset_dir,
     ckpt_run_dir,
     output_dir,
+    rank,
+    backend,
+    hosts,
     validation_only=False,
     gpu=False,
     light_target=False,
@@ -320,11 +256,13 @@ def main(
     r"""Main logic."""
 
     with initialize_backends(
-        comm_backend="mpi",
+        comm_backend=backend,
+        hosts=hosts,
+        rank=rank,
         logging_level="INFO",
         logging_file=os.path.join(output_dir, "mlbench.log"),
         use_cuda=gpu,
-        seed=42,
+        seed=43,
         cudnn_deterministic=False,
         ckpt_run_dir=ckpt_run_dir,
         delete_existing_ckpts=not validation_only,
@@ -334,64 +272,12 @@ def main(
             dataset_dir,
             ckpt_run_dir,
             output_dir,
-            validation_only,
+            validation_only=validation_only,
             use_cuda=gpu,
             light_target=light_target,
+            seed=43,
         )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Process run parameters")
-    parser.add_argument("--run_id", type=str, default="1", help="The id of the run")
-    parser.add_argument(
-        "--root-dataset",
-        type=str,
-        default="/datasets",
-        help="Default root directory to dataset.",
-    )
-    parser.add_argument(
-        "--root-checkpoint",
-        type=str,
-        default="/checkpoint",
-        help="Default root directory to checkpoint.",
-    )
-    parser.add_argument(
-        "--root-output",
-        type=str,
-        default="/output",
-        help="Default root directory to output.",
-    )
-    parser.add_argument(
-        "--validation_only",
-        action="store_true",
-        default=False,
-        help="Only validate from checkpoints.",
-    )
-    parser.add_argument(
-        "--gpu", action="store_true", default=False, help="Train with GPU"
-    )
-    parser.add_argument(
-        "--light",
-        action="store_true",
-        default=False,
-        help="Train to light target metric goal",
-    )
-    args = parser.parse_args()
-
-    uid = "scaling"
-    dataset_dir = os.path.join(args.root_dataset, "torch", "wikitext")
-    ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
-    output_dir = os.path.join(args.root_output, uid)
-    os.makedirs(dataset_dir, exist_ok=True)
-    os.makedirs(ckpt_run_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
-
-    main(
-        args.run_id,
-        dataset_dir,
-        ckpt_run_dir,
-        output_dir,
-        validation_only=args.validation_only,
-        gpu=args.gpu,
-        light_target=args.light,
-    )
+    task_main(main)
