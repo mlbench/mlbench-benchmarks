@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-from apex.optimizers.fused_adam import FusedAdam
 from torch import distributed as dist
 from torch.optim import Adam
 
@@ -14,7 +13,6 @@ def build_optimizer(
     optimizer_args,
     math_mode="fp16",
     scaling_args=None,
-    fused_adam=False,
     use_horovod=False,
     use_cuda=False,
 ):
@@ -62,10 +60,7 @@ def build_optimizer(
     else:
         raise NotImplementedError("Unknown math mode {}".format(math_mode))
 
-    if fused_adam:
-        optimizer = FusedAdam(params=params, **optimizer_args)
-    else:
-        optimizer = Adam(params=params, **optimizer_args)
+    optimizer = Adam(params=params, **optimizer_args)
     fp_optimizer.set_optimizer(optimizer)
 
     return fp_optimizer, optimizer, model

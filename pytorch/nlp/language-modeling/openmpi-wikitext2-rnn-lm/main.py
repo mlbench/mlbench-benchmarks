@@ -22,7 +22,7 @@ from mlbench_core.evaluation.goals import (
 from mlbench_core.evaluation.pytorch.metrics import Perplexity
 from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
 from mlbench_core.models.pytorch.nlp import RNNLM
-from mlbench_core.optim.pytorch.optim import CentralizedSGD
+from mlbench_core.optim.pytorch.centralized import CentralizedSGD
 from mlbench_core.utils import Tracker, AverageMeter
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.distributed import global_average

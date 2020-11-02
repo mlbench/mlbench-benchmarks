@@ -37,7 +37,7 @@ from mlbench_core.evaluation.goals import (
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.lr_scheduler.pytorch.lr import ReduceLROnPlateauWithWarmup
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
-from mlbench_core.optim.pytorch.optim import CentralizedSGD
+from mlbench_core.optim.pytorch.centralized import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq

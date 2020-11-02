@@ -21,7 +21,8 @@ import os
 import time
 
 import torch.distributed as dist
-from mlbench_core.controlflow.pytorch import train_round, validation_round
+from mlbench_core.controlflow.pytorch.train_validation import train_round
+from mlbench_core.controlflow.pytorch import validation_round
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
     CheckpointsEvaluationControlFlow,
 )

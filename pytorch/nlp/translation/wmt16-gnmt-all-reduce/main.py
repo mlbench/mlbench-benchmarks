@@ -271,9 +271,7 @@ def train_loop(
                 if update or is_last:
                     updated = opt_step(
                         fp_optimizer,
-                        update_freq,
                         math_mode,
-                        world_size,
                         tracker=tracker,
                     )
                     # Learning rate scheduler
