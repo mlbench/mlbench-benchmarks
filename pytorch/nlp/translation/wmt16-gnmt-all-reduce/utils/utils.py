@@ -1,32 +1,33 @@
 import torch
+import torch.distributed as dist
 from torch.optim import Adam
 
-from mlbench_core.optim.pytorch.fp_optimizers import (
-    FP16Optimizer,
-    FP32Optimizer,
-)
+from mlbench_core.optim.pytorch.centralized import CustomCentralizedOptimizer
+from mlbench_core.optim.pytorch.fp_optimizers import FP16Optimizer
 from mlbench_core.utils import AverageMeter
 from mlbench_core.utils.pytorch.distributed import global_average
 
 
-def build_optimizer(
-    model, math, grad_clip, loss_scaling, lr, use_cuda, world_size, use_horovod
-):
+def build_optimizer(model, math, grad_clip, loss_scaling, lr, use_cuda, use_horovod):
     params = model.parameters()
 
     if math == "fp32":
-        fp_optimizer = FP32Optimizer(
+        optimizer = Adam(params=params, lr=lr)
+        fp_optimizer = CustomCentralizedOptimizer(
+            optimizer=optimizer,
             model=model,
             grad_clip=grad_clip,
-            world_size=world_size,
+            world_size=dist.get_world_size(),
             use_cuda=use_cuda,
+            average_custom=True,
+            average_world=False,
         )
 
     elif math == "fp16":
         model = model.half()  # Set model to half precision
         fp_optimizer = FP16Optimizer(
             model,
-            world_size=world_size,
+            world_size=dist.get_world_size(),
             grad_clip=grad_clip,
             use_cuda=use_cuda,
             use_horovod=use_horovod,
@@ -39,11 +40,11 @@ def build_optimizer(
 
         # Keep params in fp32 for optimizer
         params = [fp_optimizer.fp32_params]
+        optimizer = Adam(params=params, lr=lr)
+        fp_optimizer.set_optimizer(optimizer)
     else:
         raise NotImplementedError("Unknown math mode {}".format(math))
 
-    optimizer = Adam(params=params, lr=lr)
-    fp_optimizer.set_optimizer(optimizer)
     return fp_optimizer, optimizer, model
 
 
@@ -95,26 +96,6 @@ def compute_loss(src, trg, output, loss_func, iter_size):
     loss_per_token = loss_per_batch / num_toks["trg"]
 
     return loss, loss_per_token
-
-
-def opt_step(fp_optimizer, math_mode, tracker):
-    """Performs one optimizer step.
-    Args:
-        fp_optimizer (:obj:`FP16Optimizer` | :obj:`FP32Optimizer`): The FP Optimizer
-        math_mode (str): The used math mode
-        tracker: (:obj:`mlbench_core.utils.Tracker`): Current tracker object
-    Returns:
-        (bool): Whether the weights were updated or not (i.e. if no overflow detected)
-    """
-    if math_mode == "fp32":
-        updated = fp_optimizer.step(tracker=tracker)
-    elif math_mode == "fp16":
-        # For this task, simply sum all gradients
-        updated = fp_optimizer.step(tracker=tracker, denom=1)
-    else:
-        raise NotImplementedError
-
-    return updated
 
 
 def validation_round(
