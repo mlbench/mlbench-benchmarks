@@ -35,7 +35,7 @@ from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
 
-from .utils.utils import build_optimizer, prepare_batch, validation_round
+from .utils.utils import build_optimizer, validation_round
 
 LOG_EVERY_N_BATCHES = 25
 logger = logging.getLogger("mlbench")
@@ -90,6 +90,7 @@ def train_loop(
         bptt_len, train=False, tokenizer=tokenizer, root=dataset_dir
     )
 
+    vocab = train_set.get_vocab()
     train_set = partition_dataset_by_rank(train_set, rank, world_size, shuffle=False)
     val_set = partition_dataset_by_rank(val_set, rank, world_size, shuffle=False)
 
@@ -111,7 +112,7 @@ def train_loop(
         pin_memory=use_cuda,
         drop_last=True,
     )
-    n_tokens, emb_size = len(train_set.text_field.vocab), rnn_n_hidden
+    n_tokens, emb_size = len(vocab), rnn_n_hidden
 
     model = RNNLM(
         ntoken=n_tokens,
@@ -121,6 +122,7 @@ def train_loop(
         tie_weights=rnn_tie_weights,
         dropout=drop_rate,
         weight_norm=rnn_weight_norm,
+        batch_first=True,
     )
 
     fp_optimizer, optimizer = build_optimizer(
@@ -168,12 +170,6 @@ def train_loop(
             tracker.batch_start()
 
             hidden = model.repackage_hidden(hidden)
-            # train_input, train_target, hidden = prepare_batch(batch,
-            #                                                    batch_size=batch_size,
-            #                                                    rank=rank,
-            #                                                    model=model,
-            #                                                    _hidden=hidden)
-
             tracker.record_batch_load()
 
             # inference and get current performance.
@@ -190,7 +186,6 @@ def train_loop(
             fp_optimizer.backward_loss(loss)
             tracker.record_batch_backprop()
 
-            # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
             updated = fp_optimizer.step(tracker=tracker)
             if updated:
                 scheduler.step()
@@ -206,19 +201,19 @@ def train_loop(
             tracker.batch_end()
 
             record_train_batch_stats(
-                batch_idx,
-                loss.item(),
-                output,
-                metrics_results,
-                tracker,
-                num_batches_per_device_train,
+                batch_idx=batch_idx,
+                loss=loss.item(),
+                output=output,
+                metric_results=metrics_results,
+                tracker=tracker,
+                num_batches_per_device_train=num_batches_per_device_train,
             )
 
         metrics_averages, loss_average = validation_round(
             val_loader,
-            model,
-            batch_size,
-            n_tokens,
+            model=model,
+            batch_size=batch_size,
+            n_tokens=n_tokens,
             metrics=metrics,
             loss_function=loss_function,
             tracker=tracker,
