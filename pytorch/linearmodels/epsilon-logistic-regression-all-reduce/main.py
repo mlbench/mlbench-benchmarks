@@ -35,7 +35,7 @@ from mlbench_core.evaluation.pytorch.metrics import (
     TopKAccuracy,
 )
 from mlbench_core.models.pytorch.linear_models import LogisticRegression
-from mlbench_core.optim.pytorch.optim import CentralizedSGD
+from mlbench_core.optim.pytorch.centralized import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq

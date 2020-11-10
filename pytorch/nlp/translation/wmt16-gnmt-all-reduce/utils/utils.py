@@ -1,73 +1,50 @@
 import torch
-from apex import amp
+import torch.distributed as dist
 from torch.optim import Adam
 
-from mlbench_core.optim.pytorch.fp_optimizers import (
-    AMPOptimizer,
-    FP16Optimizer,
-    FP32Optimizer,
-)
+from mlbench_core.optim.pytorch.centralized import CustomCentralizedOptimizer
+from mlbench_core.optim.pytorch.fp_optimizers import FP16Optimizer
 from mlbench_core.utils import AverageMeter
 from mlbench_core.utils.pytorch.distributed import global_average
 
 
-def build_optimizer(
-    model, math, grad_clip, loss_scaling, lr, use_cuda, world_size, use_horovod
-):
+def build_optimizer(model, math, grad_clip, loss_scaling, lr, use_cuda, use_horovod):
     params = model.parameters()
-    if math == "amp_fp16":
-        optimizer = Adam(params=params, lr=lr)
-        model, optimizer = amp.initialize(
-            model,
-            optimizer,
-            cast_model_outputs=torch.float16,
-            keep_batchnorm_fp32=False,
-            opt_level="O2",
-        )
 
-        fp_optimizer = AMPOptimizer(
-            model,
+    if math == "fp32":
+        optimizer = Adam(params=params, lr=lr)
+        fp_optimizer = CustomCentralizedOptimizer(
+            optimizer=optimizer,
+            model=model,
             grad_clip=grad_clip,
-            loss_scale=loss_scaling["init_scale"],
-            dls_upscale_interval=loss_scaling["upscale_interval"],
+            world_size=dist.get_world_size(),
             use_cuda=use_cuda,
-            world_size=world_size,
             average_custom=True,
             average_world=False,
-            use_horovod=use_horovod,
         )
-    else:
 
-        if math == "fp32":
-            fp_optimizer = FP32Optimizer(
-                model=model,
-                grad_clip=grad_clip,
-                world_size=world_size,
-                use_cuda=use_cuda,
-            )
+    elif math == "fp16":
+        model = model.half()  # Set model to half precision
+        fp_optimizer = FP16Optimizer(
+            model,
+            world_size=dist.get_world_size(),
+            grad_clip=grad_clip,
+            use_cuda=use_cuda,
+            use_horovod=use_horovod,
+            average_custom=True,
+            average_world=False,
+            init_scale=loss_scaling["init_scale"],
+            scale_window=loss_scaling["upscale_interval"],
+            max_scale=8192,
+        )
 
-        elif math == "fp16":
-            model = model.half()  # Set model to half precision
-            fp_optimizer = FP16Optimizer(
-                model,
-                world_size=world_size,
-                grad_clip=grad_clip,
-                use_cuda=use_cuda,
-                use_horovod=use_horovod,
-                average_custom=True,
-                average_world=False,
-                init_scale=loss_scaling["init_scale"],
-                scale_window=loss_scaling["upscale_interval"],
-                max_scale=8192,
-            )
-
-            # Keep params in fp32 for optimizer
-            params = [fp_optimizer.fp32_params]
-        else:
-            return NotImplementedError()
-
+        # Keep params in fp32 for optimizer
+        params = [fp_optimizer.fp32_params]
         optimizer = Adam(params=params, lr=lr)
-    fp_optimizer.set_optimizer(optimizer)
+        fp_optimizer.set_optimizer(optimizer)
+    else:
+        raise NotImplementedError("Unknown math mode {}".format(math))
+
     return fp_optimizer, optimizer, model
 
 
@@ -119,29 +96,6 @@ def compute_loss(src, trg, output, loss_func, iter_size):
     loss_per_token = loss_per_batch / num_toks["trg"]
 
     return loss, loss_per_token
-
-
-def opt_step(fp_optimizer, update_freq, math_mode, world_size, tracker):
-    """Performs one optimizer step.
-    Args:
-        fp_optimizer (:obj:`FP16Optimizer` | :obj:`FP32Optimizer`): The FP Optimizer
-        update_freq (int): The update frequency between batches
-        math_mode (str): The used math mode
-        world_size (int): Distributed world size
-        tracker: (:obj:`mlbench_core.utils.Tracker`): Current tracker object
-    Returns:
-        (bool): Whether the weights were updated or not (i.e. if no overflow detected)
-    """
-    if math_mode == "fp32":
-        updated = fp_optimizer.step(tracker=tracker)
-    elif math_mode == "fp16" or math_mode == "amp_fp16":
-        # Divide gradients by world_size*update_freq
-        # denom = world_size * update_freq
-        updated = fp_optimizer.step(tracker=tracker, denom=1)
-    else:
-        raise NotImplementedError
-
-    return updated
 
 
 def validation_round(

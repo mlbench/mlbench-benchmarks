@@ -1,10 +1,10 @@
 import numpy as np
 import torch
-from apex.optimizers.fused_adam import FusedAdam
 from torch import distributed as dist
 from torch.optim import Adam
 
-from mlbench_core.optim.pytorch.fp_optimizers import FP16Optimizer, FP32Optimizer
+from mlbench_core.optim.pytorch.centralized import CustomCentralizedOptimizer
+from mlbench_core.optim.pytorch.fp_optimizers import FP16Optimizer
 from mlbench_core.utils import AverageMeter
 from mlbench_core.utils.pytorch.distributed import global_average
 
@@ -14,7 +14,6 @@ def build_optimizer(
     optimizer_args,
     math_mode="fp16",
     scaling_args=None,
-    fused_adam=False,
     use_horovod=False,
     use_cuda=False,
 ):
@@ -26,7 +25,6 @@ def build_optimizer(
         optimizer_args (dict): The arguments for optimizer (eps, weight_decay)
         math_mode (str): One of `fp32` or `fp16`. Default `fp16`
         scaling_args (dict): Arguments for loss scaling (for `float16`). Default `None`
-        fused_adam (bool): Use apex's FusedAdam instead
         use_horovod (bool): Use horovod for communication
         use_cuda (bool): Use CUDA tensors for communication
 
@@ -49,24 +47,21 @@ def build_optimizer(
             **scaling_args
         )
         params = [fp_optimizer.fp32_params]
+        optimizer = Adam(params=params, **optimizer_args)
+        fp_optimizer.set_optimizer(optimizer)
 
     elif math_mode == "fp32":
-        fp_optimizer = FP32Optimizer(
+        optimizer = Adam(params=model.parameters(), **optimizer_args)
+        fp_optimizer = CustomCentralizedOptimizer(
+            optimizer=optimizer,
             model=model,
             world_size=dist.get_world_size(),
             use_cuda=use_cuda,
             average_custom=True,
         )
-        params = model.parameters()
 
     else:
         raise NotImplementedError("Unknown math mode {}".format(math_mode))
-
-    if fused_adam:
-        optimizer = FusedAdam(params=params, **optimizer_args)
-    else:
-        optimizer = Adam(params=params, **optimizer_args)
-    fp_optimizer.set_optimizer(optimizer)
 
     return fp_optimizer, optimizer, model
 

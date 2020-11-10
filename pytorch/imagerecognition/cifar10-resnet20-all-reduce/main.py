@@ -31,7 +31,7 @@ from mlbench_core.evaluation.goals import (task1_time_to_accuracy_goal,
                                            task1_time_to_accuracy_light_goal)
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
-from mlbench_core.optim.pytorch.optim import CentralizedSGD
+from mlbench_core.optim.pytorch.centralized import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq

@@ -1,10 +1,10 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.0.0
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.5.0
 
 # -------------------- Debug --------------------
 # RUN apt-get update && apt-get install -y vim net-tools
 
 # The reference implementation and user defined implementations are placed here.
-ADD requirements.txt /requirements.txt
+ADD ./requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 RUN /conda/bin/python -m spacy download en
 

@@ -16,7 +16,6 @@ from utils import (
     build_optimizer,
     compute_loss,
     compute_model_output,
-    opt_step,
     prepare_batch,
     validation_round,
 )
@@ -204,7 +203,6 @@ def train_loop(
         math=math_mode,
         loss_scaling=loss_scaling,
         use_cuda=use_cuda,
-        world_size=world_size,
         use_horovod=use_horovod,
         **optimizer_args
     )
@@ -269,13 +267,9 @@ def train_loop(
 
                 # Opt step
                 if update or is_last:
-                    updated = opt_step(
-                        fp_optimizer,
-                        update_freq,
-                        math_mode,
-                        world_size,
-                        tracker=tracker,
-                    )
+                    # For this task, simply sum all gradients
+                    updated = fp_optimizer.step(tracker=tracker, denom=1)
+
                     # Learning rate scheduler
                     if updated:
                         scheduler.step()
