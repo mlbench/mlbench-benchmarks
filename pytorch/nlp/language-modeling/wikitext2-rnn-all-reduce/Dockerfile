@@ -9,7 +9,10 @@ RUN pip install --no-cache-dir -r /requirements.txt
 RUN /conda/bin/python -m spacy download en
 
 RUN mkdir /codes
+RUN mkdir /codes/utils
+
 ADD main.py /codes/main.py
+ADD ./utils/* /codes/utils/
 
 ENV PYTHONPATH /codes
 

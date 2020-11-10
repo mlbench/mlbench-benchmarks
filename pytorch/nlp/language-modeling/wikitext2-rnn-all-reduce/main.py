@@ -12,6 +12,7 @@ import time
 
 import torch.distributed as dist
 import torchtext
+from torch.optim import SGD
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 from torchtext.data.utils import get_tokenizer
@@ -36,6 +37,7 @@ from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
 
 from .utils.utils import build_optimizer, validation_round
+from mlbench_core.optim.pytorch.centralized import CustomCentralizedOptimizer
 
 LOG_EVERY_N_BATCHES = 25
 logger = logging.getLogger("mlbench")
@@ -49,7 +51,6 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
-    seed=42,
 ):
     """Train loop"""
     train_epochs = 164
@@ -125,13 +126,15 @@ def train_loop(
         batch_first=True,
     )
 
-    fp_optimizer, optimizer = build_optimizer(
-        model,
-        world_size,
-        optimizer_args=optimizer_args,
-        grad_clip=rnn_clip,
-        use_cuda=use_cuda,
-    )
+    # Optimizer and
+    optimizer = SGD(model.parameters(), **optimizer_args)
+    c_optimizer = CustomCentralizedOptimizer(model,
+                                              world_size=world_size,
+                                              optimizer=optimizer,
+                                              use_cuda=use_cuda,
+                                              by_layer=False,
+                                              grad_clip=rnn_clip,
+                                              average_world=True)
     # Create a learning rate scheduler for an optimizer
     scheduler = MultistepLearningRatesWithWarmup(optimizer, **scheduler_args)
 
@@ -174,7 +177,7 @@ def train_loop(
 
             # inference and get current performance.
             # Init optimizer
-            fp_optimizer.zero_grad()
+            optimizer.zero_grad()
             tracker.record_batch_init()
 
             output, hidden = model(data, hidden)
@@ -183,12 +186,10 @@ def train_loop(
             loss = loss_function(output, target)
             tracker.record_batch_comp_loss()
 
-            fp_optimizer.backward_loss(loss)
+            loss.backward()
             tracker.record_batch_backprop()
 
-            updated = fp_optimizer.step(tracker=tracker)
-            if updated:
-                scheduler.step()
+            c_optimizer.step(tracker=tracker)
 
             metrics_results = compute_train_batch_metrics(
                 loss.item(),
@@ -208,6 +209,8 @@ def train_loop(
                 tracker=tracker,
                 num_batches_per_device_train=num_batches_per_device_train,
             )
+
+        scheduler.step()
 
         metrics_averages, loss_average = validation_round(
             val_loader,
@@ -232,6 +235,7 @@ def train_loop(
 
         if tracker.goal_reached:
             print("Goal Reached!")
+            dist.barrier()
             time.sleep(10)
             return
 

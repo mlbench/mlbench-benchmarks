@@ -1,24 +1,9 @@
 import torch
 from torch.optim import SGD
 
-from mlbench_core.optim.pytorch.fp_optimizers import FP32Optimizer
 from mlbench_core.utils import AverageMeter
 from mlbench_core.utils.pytorch.distributed import global_average
 
-
-def build_optimizer(model, world_size, optimizer_args, grad_clip, use_cuda=False):
-    fp_optimizer = FP32Optimizer(
-        model=model,
-        world_size=world_size,
-        use_cuda=use_cuda,
-        average_world=True,
-        grad_clip=grad_clip,
-        by_layer=False,
-    )
-
-    optimizer = SGD(**optimizer_args)
-    fp_optimizer.set_optimizer(optimizer)
-    return fp_optimizer, optimizer
 
 
 def validation_round(
