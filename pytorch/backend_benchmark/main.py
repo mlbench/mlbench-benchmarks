@@ -121,7 +121,7 @@ def train_loop(run_id, use_horovod=False, gpu=False):
     size_range = np.logspace(0, 8, num=80)
     num_samples = 100
 
-    do_fp16 = dist.get_backend() != dist.Backend.MPI or use_horovod
+    do_fp16 = True#dist.get_backend() != dist.Backend.MPI or use_horovod
     is_nccl = dist.get_backend() == dist.Backend.NCCL
 
     logger.info("Using {}".format(dist.get_backend()))
@@ -138,36 +138,34 @@ def train_loop(run_id, use_horovod=False, gpu=False):
     if is_nccl and not gpu:
         raise ValueError("Cannot run NCCL without GPU")
 
-    use_cudas = [True] if is_nccl else [gpu]
     for j, size in enumerate(size_range):
         size = int(size)
-        for use_cuda in use_cudas:
+        avg = get_communication_average(
+            size, torch.float32, gpu, num_samples, use_horovod
+        )
+        tracker.record_stat("tensor_size", size, log_to_api=True)
+        tracker.record_stat("dtype", 32, log_to_api=True)
+        tracker.record_stat("cuda", 1 if gpu else 0, log_to_api=True)
+        tracker.record_stat("avg_time", avg, log_to_api=True)
+        logger.info(
+            "Size={}, dtype=float32, use_cuda={}, avg_time={}".format(
+                size, gpu, avg
+            )
+        )
+
+        if do_fp16:
             avg = get_communication_average(
-                size, torch.float32, use_cuda, num_samples, use_horovod
+                size, torch.float16, gpu, num_samples, use_horovod
             )
             tracker.record_stat("tensor_size", size, log_to_api=True)
-            tracker.record_stat("dtype", 32, log_to_api=True)
-            tracker.record_stat("cuda", 1 if use_cuda else 0, log_to_api=True)
+            tracker.record_stat("dtype", 16, log_to_api=True)
+            tracker.record_stat("cuda", 1 if gpu else 0, log_to_api=True)
             tracker.record_stat("avg_time", avg, log_to_api=True)
             logger.info(
-                "Size={}, dtype=float32, use_cuda={}, avg_time={}".format(
-                    size, use_cuda, avg
+                "Size={}, dtype=float16, use_cuda={}, avg_time={}".format(
+                    size, gpu, avg
                 )
             )
-
-            if do_fp16:
-                avg = get_communication_average(
-                    size, torch.float16, use_cuda, num_samples, use_horovod
-                )
-                tracker.record_stat("tensor_size", size, log_to_api=True)
-                tracker.record_stat("dtype", 16, log_to_api=True)
-                tracker.record_stat("cuda", 1 if use_cuda else 0, log_to_api=True)
-                tracker.record_stat("avg_time", avg, log_to_api=True)
-                logger.info(
-                    "Size={}, dtype=float16, use_cuda={}, avg_time={}".format(
-                        size, use_cuda, avg
-                    )
-                )
     tracker.validation_end()
     time.sleep(10)
 
