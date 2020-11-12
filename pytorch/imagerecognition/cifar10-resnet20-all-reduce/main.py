@@ -185,7 +185,10 @@ def train_loop(
                 optimizer.step(tracker=tracker)
 
                 metrics_results = compute_train_batch_metrics(
-                    loss.item(), output, target, metrics,
+                    loss.item(),
+                    output,
+                    target,
+                    metrics,
                 )
                 tracker.record_batch_comp_metrics()
                 tracker.batch_end()

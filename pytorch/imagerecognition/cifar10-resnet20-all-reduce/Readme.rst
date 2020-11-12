@@ -11,4 +11,4 @@ Resnet 20 implementation for CIFAR-10 using All-Reduce
 :Dataset: CIFAR-10
 :GPU: Yes
 :Seed: 42
-:Image Location: mlbench/pytorch-cifar10-resnet-scaling:latest
+:Image Location: mlbench/pytorch-cifar10-resnet20-all-reduce:latest
