@@ -18,10 +18,10 @@ jobs:
         - IMAGE_DIR=./pytorch/imagerecognition/cifar10-resnet20-all-reduce
       <<: *shared_job
 
-    - name: "Build PyTorch CIFAR10 ResNet-20 (Scaling)"
+    - name: "Build PyTorch CIFAR10 ResNet-20 (DDP)"
       env:
-        - IMAGE_NAME=pytorch-cifar10-resnet20-all-reduce-scaling
-        - IMAGE_DIR=./pytorch/imagerecognition/cifar10-resnet20-all-reduce-scaling
+        - IMAGE_NAME=pytorch-cifar10-resnet20-ddp
+        - IMAGE_DIR=./pytorch/imagerecognition/cifar10-resnet20-distributed-data-parallel
       <<: *shared_job
 
     - name: "Build PyTorch Epsilon Logistic Regression"
