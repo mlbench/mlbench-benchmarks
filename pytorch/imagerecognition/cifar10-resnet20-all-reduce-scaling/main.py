@@ -119,7 +119,7 @@ def train_loop(
 
     # Create a learning rate scheduler for an optimizer
     scheduler = ReduceLROnPlateauWithWarmup(
-        optimizer,
+        optimizer.optimizer,
         warmup_init_lr=lr,
         scaled_lr=scaled_lr,
         warmup_epochs=int(math.log(world_size, 2)),  # Adaptive warmup period

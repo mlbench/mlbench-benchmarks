@@ -1,7 +1,4 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.5.0
-
-# -------------------- Debug --------------------
-# RUN apt-get update && apt-get install -y vim net-tools
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.7.0
 
 # The reference implementation and user defined implementations are placed here.
 ADD ./requirements.txt /requirements.txt
