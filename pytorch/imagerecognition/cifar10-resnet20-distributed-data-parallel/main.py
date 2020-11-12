@@ -21,29 +21,34 @@ import os
 import time
 
 import torch.distributed as dist
-from mlbench_core.controlflow.pytorch.train_validation import train_round
-from mlbench_core.controlflow.pytorch import validation_round
+from torch import cuda
+from torch.nn.modules.loss import CrossEntropyLoss
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim import SGD
+from torch.optim.lr_scheduler import MultiStepLR
+from torch.utils.data import DataLoader
+
+from mlbench_core.controlflow.pytorch import (
+    compute_train_batch_metrics,
+    record_train_batch_stats,
+    record_validation_stats,
+    validation_round,
+)
 from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
     CheckpointsEvaluationControlFlow,
 )
+from mlbench_core.controlflow.pytorch.helpers import iterate_dataloader
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import (
-    task1_time_to_accuracy_light_goal,
     task1_time_to_accuracy_goal,
+    task1_time_to_accuracy_light_goal,
 )
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
-from mlbench_core.utils.pytorch.checkpoint import CheckpointFreq
-from mlbench_core.utils.pytorch.checkpoint import Checkpointer
-from torch.nn.modules.loss import CrossEntropyLoss
-from torch.optim.lr_scheduler import MultiStepLR
-from torch.utils.data import DataLoader
-from torch import cuda
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.optim import SGD
+from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
 
 
 def train_loop(
@@ -58,7 +63,6 @@ def train_loop(
 ):
     r"""Main logic."""
     num_parallel_workers = 2
-    max_batch_per_epoch = None
     train_epochs = 164
     batch_size = 128
 
@@ -66,7 +70,9 @@ def train_loop(
     world_size = dist.get_world_size()
     current_device = cuda.current_device()
 
-    local_model = ResNetCIFAR(resnet_size=20, bottleneck=False, num_classes=10, version=1).to(current_device)
+    local_model = ResNetCIFAR(
+        resnet_size=20, bottleneck=False, num_classes=10, version=1
+    ).to(current_device)
     model = DDP(local_model, device_ids=[current_device])
 
     optimizer = SGD(
@@ -130,40 +136,76 @@ def train_loop(
         tracker.start()
 
         for epoch in range(0, train_epochs):
-            train_round(
-                train_loader,
-                model,
-                optimizer,
-                loss_function,
-                metrics,
-                scheduler,
-                "fp32",
-                schedule_per="epoch",
-                transform_target_type=None,
-                use_cuda=use_cuda,
-                max_batch_per_epoch=max_batch_per_epoch,
+            model.train()
+            tracker.train()
+
+            data_iter = iterate_dataloader(
+                train_loader, dtype="fp32", use_cuda=use_cuda
+            )
+            num_batches_per_device_train = len(train_loader)
+
+            for batch_idx, (data, target) in enumerate(data_iter):
+                tracker.batch_start()
+
+                # Clear gradients in the optimizer.
+                optimizer.zero_grad()
+                tracker.record_batch_init()
+
+                # Compute the output
+                output = model(data)
+                tracker.record_batch_fwd_pass()
+
+                # Compute the loss
+                loss = loss_function(output, target)
+                tracker.record_batch_comp_loss()
+
+                # Backprop
+                loss.backward()
+                tracker.record_batch_backprop()
+
+                # Aggregate gradients/parameters from all workers and apply updates to model
+                optimizer.step()
+                tracker.record_batch_opt_step()
+
+                metrics_results = compute_train_batch_metrics(
+                    loss.item(),
+                    output,
+                    target,
+                    metrics,
+                )
+
+                tracker.record_batch_comp_metrics()
+                tracker.batch_end()
+
+                record_train_batch_stats(
+                    batch_idx,
+                    loss.item(),
+                    output,
+                    metrics_results,
+                    tracker,
+                    num_batches_per_device_train,
+                )
+
+            tracker.epoch_end()
+            metrics_values, loss = validation_round(
+                val_loader,
+                model=model,
+                loss_function=loss_function,
+                metrics=metrics,
+                dtype="fp32",
                 tracker=tracker,
+                use_cuda=use_cuda,
             )
 
-            is_best = validation_round(
-                val_loader,
-                model,
-                loss_function,
-                metrics,
-                run_id,
-                rank,
-                "fp32",
-                transform_target_type=None,
-                use_cuda=use_cuda,
-                max_batch_per_epoch=max_batch_per_epoch,
-                tracker=tracker,
+            scheduler.step()
+            # Record validation stats
+            is_best = record_validation_stats(
+                metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
             )
 
             checkpointer.save(
                 tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
             )
-
-            tracker.epoch_end()
 
             if tracker.goal_reached:
                 print("Goal Reached!")
