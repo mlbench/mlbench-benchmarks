@@ -7,6 +7,7 @@ from datetime import datetime
 import numpy as np
 import torch
 import torch.distributed as dist
+
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 
@@ -121,7 +122,7 @@ def train_loop(run_id, use_horovod=False, gpu=False):
     size_range = np.logspace(0, 8, num=80)
     num_samples = 100
 
-    do_fp16 = True#dist.get_backend() != dist.Backend.MPI or use_horovod
+    do_fp16 = dist.get_backend() != dist.Backend.MPI or use_horovod
     is_nccl = dist.get_backend() == dist.Backend.NCCL
 
     logger.info("Using {}".format(dist.get_backend()))
@@ -148,9 +149,7 @@ def train_loop(run_id, use_horovod=False, gpu=False):
         tracker.record_stat("cuda", 1 if gpu else 0, log_to_api=True)
         tracker.record_stat("avg_time", avg, log_to_api=True)
         logger.info(
-            "Size={}, dtype=float32, use_cuda={}, avg_time={}".format(
-                size, gpu, avg
-            )
+            "Size={}, dtype=float32, use_cuda={}, avg_time={}".format(size, gpu, avg)
         )
 
         if do_fp16:
