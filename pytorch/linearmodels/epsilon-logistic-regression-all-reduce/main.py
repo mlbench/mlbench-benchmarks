@@ -12,6 +12,9 @@ import os
 import time
 
 import torch.distributed as dist
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.data import DataLoader
+
 from mlbench_core.controlflow.pytorch import (
     compute_train_batch_metrics,
     prepare_batch,
@@ -39,8 +42,6 @@ from mlbench_core.optim.pytorch.centralized import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import DataLoader
 
 
 def train_loop(
@@ -124,7 +125,7 @@ def train_loop(
     num_batches_per_device_train = len(train_loader)
 
     scheduler = ReduceLROnPlateau(
-        optimizer,
+        optimizer.optimizer,
         factor=0.75,
         patience=0,
         verbose=True,
@@ -183,7 +184,10 @@ def train_loop(
                 optimizer.step(tracker=tracker)
 
                 metrics_results = compute_train_batch_metrics(
-                    loss.item(), output, target, metrics,
+                    loss.item(),
+                    output,
+                    target,
+                    metrics,
                 )
 
                 tracker.record_batch_comp_metrics()
