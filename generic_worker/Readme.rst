@@ -1,4 +1,4 @@
 Simple worker image for testing
 """""""""""""""""""""""""""""""
 
-:Image Location: mlbench/mlbench_worker
+:Image Location: mlbench/mlbench_worker:latest

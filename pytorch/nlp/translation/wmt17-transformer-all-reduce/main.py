@@ -3,6 +3,7 @@
 This implements the machine translation benchmark tasks,
 # TODO add link to docs
 """
+import argparse
 import json
 import logging
 import os

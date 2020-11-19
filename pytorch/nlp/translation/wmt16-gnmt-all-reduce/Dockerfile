@@ -1,4 +1,4 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.5.0
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.7.0
 
 # -------------------- Debug --------------------
 # RUN apt-get update && apt-get install -y vim net-tools
@@ -7,11 +7,11 @@ RUN git clone https://github.com/NVIDIA/apex && cd apex && git checkout f3a960f 
     pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--xentropy" ./ && \
     cd ..
 
-# Horovod
-RUN HOROVOD_GPU_ALLREDUCE=MPI HOROVOD_GPU_BROADCAST=MPI \
-    HOROVOD_WITH_PYTORCH=1\
-    HOROVOD_WITH_MPI=1\
-    pip install --no-cache-dir horovod
+## Horovod
+#RUN HOROVOD_GPU_ALLREDUCE=MPI HOROVOD_GPU_BROADCAST=MPI \
+#    HOROVOD_WITH_PYTORCH=1\
+#    HOROVOD_WITH_MPI=1\
+#    pip install --no-cache-dir horovod
 
 
 

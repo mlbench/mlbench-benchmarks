@@ -11,4 +11,4 @@ Resnet 20 implementation for CIFAR-10 using PyTorch DDP
 :Dataset: CIFAR-10
 :GPU: Yes
 :Seed: 42
-:Image Location: mlbench/pytorch-cifar10-resnet-ddp:latest
+:Image Location: mlbench/pytorch-cifar10-resnet20-ddp:latest

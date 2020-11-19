@@ -1,2 +1,1 @@
-mlbench-core==2.4.0.dev262
-tensorpack==0.9.8
+mlbench-core[torch]==2.4.0.dev293

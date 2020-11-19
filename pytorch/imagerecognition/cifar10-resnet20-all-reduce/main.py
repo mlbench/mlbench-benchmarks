@@ -10,26 +10,32 @@ for more details.
 """
 import argparse
 import json
+import math
 import os
 import time
 
 import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
-from torch.optim.lr_scheduler import MultiStepLR, ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
-from mlbench_core.controlflow.pytorch import (compute_train_batch_metrics,
-                                              prepare_batch,
-                                              record_train_batch_stats,
-                                              record_validation_stats,
-                                              validation_round)
-from mlbench_core.controlflow.pytorch.checkpoints_evaluation import \
-    CheckpointsEvaluationControlFlow
+from mlbench_core.controlflow.pytorch import (
+    compute_train_batch_metrics,
+    prepare_batch,
+    record_train_batch_stats,
+    record_validation_stats,
+    validation_round,
+)
+from mlbench_core.controlflow.pytorch.checkpoints_evaluation import (
+    CheckpointsEvaluationControlFlow,
+)
 from mlbench_core.dataset.imagerecognition.pytorch import CIFAR10V1
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
-from mlbench_core.evaluation.goals import (task1_time_to_accuracy_goal,
-                                           task1_time_to_accuracy_light_goal)
+from mlbench_core.evaluation.goals import (
+    task1_time_to_accuracy_goal,
+    task1_time_to_accuracy_light_goal,
+)
 from mlbench_core.evaluation.pytorch.metrics import TopKAccuracy
+from mlbench_core.lr_scheduler.pytorch.lr import ReduceLROnPlateauWithWarmup
 from mlbench_core.models.pytorch.resnet import ResNetCIFAR
 from mlbench_core.optim.pytorch.centralized import CentralizedSGD
 from mlbench_core.utils import Tracker
@@ -46,7 +52,7 @@ def train_loop(
     use_cuda=False,
     light_target=False,
 ):
-    r"""Main logic."""
+    """Train loop"""
     num_parallel_workers = 2
     max_batch_per_epoch = None
     train_epochs = 164
@@ -56,8 +62,11 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    lr = (0.05 / 128) * batch_size * world_size
+    # LR = 0.1 / 256 / sample
+    lr = 0.02
+    scaled_lr = lr * world_size
     by_layer = False
+
     # Create Model
     model = ResNetCIFAR(resnet_size=20, bottleneck=False, num_classes=10, version=1)
 
@@ -73,9 +82,6 @@ def train_loop(
         by_layer=by_layer,
     )
 
-    # Create a learning rate scheduler for an optimizer
-    scheduler = MultiStepLR(optimizer, milestones=[82, 109], gamma=0.1)
-
     # A loss_function for computing the loss
     loss_function = CrossEntropyLoss()
 
@@ -86,10 +92,10 @@ def train_loop(
     # Metrics like Top 1/5 Accuracy
     metrics = [TopKAccuracy(topk=1), TopKAccuracy(topk=5)]
 
-    # Create train/validation sets and loaders
     train_set = CIFAR10V1(dataset_dir, train=True, download=True)
-    val_set = CIFAR10V1(dataset_dir, train=False, download=False)
+    val_set = CIFAR10V1(dataset_dir, train=False, download=True)
 
+    # Create train/validation sets and loaders
     train_set = partition_dataset_by_rank(train_set, rank, world_size)
     val_set = partition_dataset_by_rank(val_set, rank, world_size)
 
@@ -109,6 +115,20 @@ def train_loop(
         num_workers=num_parallel_workers,
         pin_memory=use_cuda,
         drop_last=False,
+    )
+
+    # Create a learning rate scheduler for an optimizer
+    scheduler = ReduceLROnPlateauWithWarmup(
+        optimizer.optimizer,
+        warmup_init_lr=lr,
+        scaled_lr=scaled_lr,
+        warmup_epochs=int(math.log(world_size, 2)),  # Adaptive warmup period
+        factor=0.5,
+        threshold_mode="abs",
+        threshold=0.01,
+        patience=1,
+        verbose=True,
+        min_lr=lr,
     )
 
     checkpointer = Checkpointer(
@@ -135,6 +155,7 @@ def train_loop(
             tracker.train()
 
             for batch_idx, (data, target) in enumerate(train_loader):
+                tracker.batch_start()
                 data, target = prepare_batch(
                     data,
                     target,
@@ -142,8 +163,7 @@ def train_loop(
                     transform_target_dtype=False,
                     use_cuda=use_cuda,
                 )
-
-                tracker.batch_start()
+                tracker.record_batch_load()
 
                 # Clear gradients in the optimizer.
                 optimizer.zero_grad()
@@ -165,7 +185,10 @@ def train_loop(
                 optimizer.step(tracker=tracker)
 
                 metrics_results = compute_train_batch_metrics(
-                    loss.item(), output, target, metrics,
+                    loss.item(),
+                    output,
+                    target,
+                    metrics,
                 )
                 tracker.record_batch_comp_metrics()
                 tracker.batch_end()
@@ -180,7 +203,7 @@ def train_loop(
                 )
 
             # Scheduler per epoch
-            scheduler.step()
+            tracker.epoch_end()
 
             # Perform validation and gather results
             metrics_values, loss = validation_round(
@@ -194,6 +217,7 @@ def train_loop(
                 use_cuda=use_cuda,
                 max_batches=max_batch_per_epoch,
             )
+            scheduler.step(loss)
 
             # Record validation stats
             is_best = record_validation_stats(
@@ -204,13 +228,11 @@ def train_loop(
                 tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
             )
 
-            tracker.epoch_end()
-
             if tracker.goal_reached:
                 print("Goal Reached!")
+                dist.barrier()
                 time.sleep(10)
                 return
-
     else:
         cecf = CheckpointsEvaluationControlFlow(
             ckpt_dir=ckpt_run_dir,
@@ -315,7 +337,7 @@ if __name__ == "__main__":
     parser.add_argument("--hosts", type=str, help="The list of hosts")
     args = parser.parse_args()
 
-    uid = "benchmark"
+    uid = "scaling"
     dataset_dir = os.path.join(args.root_dataset, "torch", "cifar10")
     ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
     output_dir = os.path.join(args.root_output, uid)
