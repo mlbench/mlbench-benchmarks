@@ -66,7 +66,7 @@ def train_loop(
     train_epochs = 8
     train_min_len, train_max_len = 0, 75
     val_min_len, val_max_len = 0, 150
-    math_mode = "fp16"  # One of `fp16`, `fp32` or `amp_fp16`
+    math_mode = "fp16"  # One of `fp16`, `fp32`
     lang = ("en", "de")
 
     # Training
@@ -187,9 +187,7 @@ def train_loop(
         model = model.cuda()
         criterion = criterion.cuda()
 
-    use_horovod = (
-        math_mode == "fp16" or math_mode == "amp_fp16"
-    ) and dist.get_backend() == dist.Backend.MPI
+    use_horovod = math_mode == "fp16" and dist.get_backend() == dist.Backend.MPI
 
     if use_horovod:
         hvd.init()
