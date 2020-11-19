@@ -275,4 +275,4 @@ def main(
 
 
 if __name__ == "__main__":
-    task_main(main)
+    task_main(main, uid="ddp")
