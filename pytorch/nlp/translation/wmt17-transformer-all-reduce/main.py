@@ -3,7 +3,6 @@
 This implements the machine translation benchmark tasks,
 # TODO add link to docs
 """
-import argparse
 import json
 import logging
 import os
@@ -31,7 +30,6 @@ from mlbench_core.controlflow.pytorch.controlflow import (
     record_train_batch_stats,
     record_validation_stats,
 )
-from mlbench_core.controlflow.task_args import task_main
 from mlbench_core.dataset.nlp.pytorch import WMT17Dataset, get_batches
 from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
 from mlbench_core.evaluation.goals import task4_time_to_bleu_goal
@@ -42,6 +40,7 @@ from mlbench_core.models.pytorch.transformer import SequenceGenerator, Transform
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
+from mlbench_core.utils.task_args import task_main
 
 try:
     import horovod.torch as hvd
