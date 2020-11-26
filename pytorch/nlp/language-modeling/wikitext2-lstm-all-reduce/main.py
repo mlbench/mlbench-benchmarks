@@ -11,33 +11,25 @@ import os
 import time
 
 import torch.distributed as dist
-import torchtext
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.optim import SGD
-from torch.utils.data import DataLoader
-from torchtext.data.utils import get_tokenizer
 
 from mlbench_core.controlflow.pytorch.controlflow import (
     compute_train_batch_metrics,
     record_train_batch_stats,
     record_validation_stats,
 )
-from mlbench_core.controlflow.task_args import task_main
-from mlbench_core.dataset.nlp.pytorch import BPTTWikiText2
-from mlbench_core.dataset.util.pytorch import partition_dataset_by_rank
-from mlbench_core.evaluation.goals import (
-    task3_time_to_preplexity_goal,
-    task3_time_to_preplexity_light_goal,
-)
+from mlbench_core.dataset.nlp.pytorch import Wikitext2Dataset
+from mlbench_core.evaluation.goals import task3_time_to_perplexity_goal
 from mlbench_core.evaluation.pytorch.metrics import Perplexity
-from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
-from mlbench_core.models.pytorch.nlp import RNNLM
+from mlbench_core.models.pytorch.language_models import LSTMLanguageModel
 from mlbench_core.optim.pytorch.centralized import CustomCentralizedOptimizer
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
+from mlbench_core.utils.task_args import task_main
 
-from .utils.utils import build_optimizer, validation_round
+from .utils.utils import repackage_hidden, validation_round
 
 LOG_EVERY_N_BATCHES = 25
 logger = logging.getLogger("mlbench")
@@ -51,112 +43,84 @@ def train_loop(
     validation_only=False,
     use_cuda=False,
     light_target=False,
+    seed=42,
 ):
     """Train loop"""
-    train_epochs = 164
-    batch_size = 128
-    rnn_n_hidden = 1000
-    rnn_n_layers = 3
-    rnn_tie_weights = True
-    rnn_clip = 0.25
-    drop_rate = 0.1
-    rnn_weight_norm = False
-
-    bptt_len = 30
-    lr = 0.001
+    train_epochs = 750
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    optimizer_args = {
-        "lr": lr,
-        "momentum": 0.9,
-        "weight_decay": 1e-4,
-        "nesterov": False,
+    train_global_batch_size = 80
+    train_batch_size = train_global_batch_size
+    val_batch_size = 10
+    # Define the batch sizes here
+
+    # Dataset arguments
+    bptt = 70
+    min_seq_len = 5
+
+    # Model Arguments
+    model_args = {
+        "ninp": 400,
+        "nhid": 1150,
+        "nlayers": 3,
+        "dropout": 0.4,
+        "dropouth": 0.2,
+        "dropouti": 0.65,
+        "dropoute": 0.1,
+        "wdrop": 0.5,
+        "tie_weights": True,
     }
 
-    scheduler_args = {
-        "gamma": 0.1,
-        "milestones": [150, 225],
-        "warmup_duration": 5,
-        "warmup_init_lr": 0,
-        "scaled_lr": lr * world_size,
-    }
+    # Optimizer args
+    lr = 30
+    weight_decay = 1.2e-6
+    grad_clip = 0.25
+    alpha = 2
+    beta = 1
 
-    tokenizer = get_tokenizer("spacy")
-    train_set = BPTTWikiText2(
-        bptt_len, train=True, tokenizer=tokenizer, root=dataset_dir
+    train_set = Wikitext2Dataset(
+        dataset_dir, bptt=bptt, train=True, min_seq_len=min_seq_len
     )
-    val_set = BPTTWikiText2(
-        bptt_len, train=False, tokenizer=tokenizer, root=dataset_dir
+    val_set = Wikitext2Dataset(
+        dataset_dir, bptt=bptt, valid=True, min_seq_len=min_seq_len
     )
+    ntokens = len(train_set.dictionary)
 
-    vocab = train_set.get_vocab()
-    train_set = partition_dataset_by_rank(train_set, rank, world_size, shuffle=False)
-    val_set = partition_dataset_by_rank(val_set, rank, world_size, shuffle=False)
+    train_set.generate_batches(train_batch_size)
+    val_set.generate_batches(val_batch_size)
+    # Generate batches
 
-    num_dataloader_workers = 2
-    train_loader = DataLoader(
-        train_set,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_dataloader_workers,
-        pin_memory=use_cuda,
-        drop_last=True,
-    )
+    logger.info("Built dictionary of {} tokens".format(ntokens))
 
-    val_loader = DataLoader(
-        val_set,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_dataloader_workers,
-        pin_memory=use_cuda,
-        drop_last=True,
-    )
-    n_tokens, emb_size = len(vocab), rnn_n_hidden
-
-    model = RNNLM(
-        ntoken=n_tokens,
-        ninp=emb_size,
-        nhid=rnn_n_hidden,
-        nlayers=rnn_n_layers,
-        tie_weights=rnn_tie_weights,
-        dropout=drop_rate,
-        weight_norm=rnn_weight_norm,
-        batch_first=True,
-    )
-
-    # Optimizer and
-    optimizer = SGD(model.parameters(), **optimizer_args)
-    c_optimizer = CustomCentralizedOptimizer(
-        model,
-        world_size=world_size,
-        optimizer=optimizer,
-        use_cuda=use_cuda,
-        by_layer=False,
-        grad_clip=rnn_clip,
-        average_world=True,
-    )
-    # Create a learning rate scheduler for an optimizer
-    scheduler = MultistepLearningRatesWithWarmup(optimizer, **scheduler_args)
-
-    # A loss_function for computing the loss
-    loss_function = CrossEntropyLoss(reduction="mean")
-
+    model = LSTMLanguageModel(ntokens, **model_args)
+    criterion = CrossEntropyLoss(reduction="mean")
     if use_cuda:
         model = model.cuda()
-        loss_function = loss_function.cuda()
+        criterion = criterion.cuda()
 
-    # Metrics like Top 1/5 Accuracy
+    optimizer = SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
+    c_optimizer = CustomCentralizedOptimizer(
+        model=model,
+        optimizer=optimizer,
+        use_cuda=use_cuda,
+        agg_grad=True,
+        grad_clip=grad_clip,
+        world_size=world_size,
+        average_custom=True,
+    )
+
     metrics = [Perplexity()]
+
     checkpointer = Checkpointer(
         ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.BEST
     )
 
     if light_target:
-        goal = task3_time_to_preplexity_light_goal
+        goal = task3_time_to_perplexity_goal(90)
     else:
-        goal = task3_time_to_preplexity_goal
+        goal = task3_time_to_perplexity_goal(70)
 
     tracker = Tracker(metrics, run_id, rank, goal=goal)
 
@@ -164,76 +128,82 @@ def train_loop(
     tracker.start()
 
     for epoch in range(0, train_epochs):
-
         model.train()
         tracker.train()
-        hidden = model.init_hidden(batch_size)
 
-        num_batches_per_device_train = len(train_loader)
-        # configure local step.
-        for batch_idx, (data, target) in enumerate(train_loader):
+        # Init hidden state
+        hidden = model.init_hidden(train_batch_size)
+        train_loader = train_set.get_loader(random_length=True, cuda=use_cuda)
+
+        num_batches_per_device_train = 1
+        for batch_idx, (data, targets) in enumerate(train_loader):
             tracker.batch_start()
+            seq_len = data.size(0)
 
-            hidden = model.repackage_hidden(hidden)
-            tracker.record_batch_load()
-
-            # inference and get current performance.
-            # Init optimizer
-            optimizer.zero_grad()
+            hidden = repackage_hidden(hidden)
+            c_optimizer.zero_grad()
             tracker.record_batch_init()
 
-            output, hidden = model(data, hidden)
+            output, hidden, raw_outputs, outputs = model(data, hidden, return_h=True)
             tracker.record_batch_fwd_pass()
 
-            loss = loss_function(output, target)
+            loss = criterion(output, targets)
+            # Activation regularization
+            loss = loss + sum(
+                alpha * dropped_rnn_h.pow(2).mean() for dropped_rnn_h in outputs[-1:]
+            )
+            # Temporal Activation Regularization (slowness)
+            loss = loss + sum(
+                beta * (rnn_h[1:] - rnn_h[:-1]).pow(2).mean()
+                for rnn_h in raw_outputs[-1:]
+            )
             tracker.record_batch_comp_loss()
 
             loss.backward()
             tracker.record_batch_backprop()
 
-            c_optimizer.step(tracker=tracker)
+            c_optimizer.step(denom=bptt / seq_len, tracker=tracker)
+            tracker.record_batch_opt_step()
 
             metrics_results = compute_train_batch_metrics(
                 output,
-                target,
+                targets,
                 metrics,
             )
+
             tracker.record_batch_comp_metrics()
 
+            # scheduler.batch_step()
             tracker.batch_end()
 
             record_train_batch_stats(
-                batch_idx=batch_idx,
-                loss=loss.item(),
-                output=output,
-                metric_results=metrics_results,
-                tracker=tracker,
-                num_batches_per_device_train=num_batches_per_device_train,
+                batch_idx,
+                loss.item(),
+                output,
+                metrics_results,
+                tracker,
+                num_batches_per_device_train,
             )
+        tracker.epoch_end()
 
-        scheduler.step()
+        val_loader = val_set.get_loader(cuda=use_cuda)
 
-        metrics_averages, loss_average = validation_round(
-            val_loader,
+        metrics_values, loss = validation_round(
+            loader=val_loader,
             model=model,
-            batch_size=batch_size,
-            n_tokens=n_tokens,
+            batch_size=val_batch_size,
             metrics=metrics,
-            loss_function=loss_function,
+            loss_function=criterion,
             tracker=tracker,
         )
 
-        is_best = record_validation_stats(metrics_averages, loss_average, tracker, rank)
-        checkpointer.save(
-            tracker,
-            model,
-            optimizer,
-            scheduler,
-            tracker.current_epoch,
-            is_best,
+        # Record validation stats
+        is_best = record_validation_stats(
+            metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
         )
-        tracker.epoch_end()
-
+        checkpointer.save(
+            tracker, model, optimizer, None, tracker.current_epoch, is_best
+        )
         if tracker.goal_reached:
             print("Goal Reached!")
             dist.barrier()

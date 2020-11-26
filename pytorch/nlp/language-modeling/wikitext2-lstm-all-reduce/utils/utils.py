@@ -5,9 +5,16 @@ from mlbench_core.utils import AverageMeter
 from mlbench_core.utils.pytorch.distributed import global_average
 
 
-def validation_round(
-    loader, model, batch_size, n_tokens, metrics, loss_function, tracker
-):
+def repackage_hidden(h):
+    """Wraps hidden states in new Tensors,
+    to detach them from their history."""
+    if isinstance(h, torch.Tensor):
+        return h.detach()
+    else:
+        return tuple(repackage_hidden(v) for v in h)
+
+
+def validation_round(loader, model, batch_size, metrics, loss_function, tracker):
     # finish one epoch training and to decide if we want to val our model.
     tracker.validation()
     tracker.validation_start()
@@ -21,22 +28,19 @@ def validation_round(
 
     # Each worker computer their own losses and metrics
     with torch.no_grad():
-
         hidden = model.init_hidden(batch_size)
 
         for data, target in loader:
-            hidden = model.repackage_hidden(hidden)
-
             # Inference
             output, hidden = model(data, hidden)
 
             # Compute loss
-            loss = loss_function(
-                output.view(-1, n_tokens), target.contiguous().view(-1)
-            )
+            loss = loss_function(output, target)
 
             # Update loss
             losses.update(loss.item(), data.size(0))
+
+            hidden = repackage_hidden(hidden)
 
             # Update metrics
             for metric in metrics:
