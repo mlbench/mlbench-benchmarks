@@ -136,7 +136,7 @@ def validation_round(
             # Update metrics
             translated, targets = translator.translate(data, target)
             for metric in metrics:
-                metric_value = metric(loss, translated, targets)
+                metric_value = metric(translated, targets)
                 size = data[0].shape[1]
 
                 metric.update(metric_value, size)

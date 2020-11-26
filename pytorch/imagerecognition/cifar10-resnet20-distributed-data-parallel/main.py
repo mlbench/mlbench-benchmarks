@@ -169,7 +169,6 @@ def train_loop(
                 tracker.record_batch_opt_step()
 
                 metrics_results = compute_train_batch_metrics(
-                    loss.item(),
                     output,
                     target,
                     metrics,
