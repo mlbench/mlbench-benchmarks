@@ -183,6 +183,7 @@ def train_loop(
 
                 # Aggregate gradients/parameters from all workers and apply updates to model
                 optimizer.step(tracker=tracker)
+                tracker.record_batch_opt_step()
 
                 metrics_results = compute_train_batch_metrics(
                     output,

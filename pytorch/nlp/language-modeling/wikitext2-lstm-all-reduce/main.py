@@ -12,8 +12,8 @@ import time
 
 import torch.distributed as dist
 import torchtext
-from torch.optim import SGD
 from torch.nn.modules.loss import CrossEntropyLoss
+from torch.optim import SGD
 from torch.utils.data import DataLoader
 from torchtext.data.utils import get_tokenizer
 
@@ -32,12 +32,12 @@ from mlbench_core.evaluation.goals import (
 from mlbench_core.evaluation.pytorch.metrics import Perplexity
 from mlbench_core.lr_scheduler.pytorch.lr import MultistepLearningRatesWithWarmup
 from mlbench_core.models.pytorch.nlp import RNNLM
+from mlbench_core.optim.pytorch.centralized import CustomCentralizedOptimizer
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
 
 from .utils.utils import build_optimizer, validation_round
-from mlbench_core.optim.pytorch.centralized import CustomCentralizedOptimizer
 
 LOG_EVERY_N_BATCHES = 25
 logger = logging.getLogger("mlbench")
@@ -128,13 +128,15 @@ def train_loop(
 
     # Optimizer and
     optimizer = SGD(model.parameters(), **optimizer_args)
-    c_optimizer = CustomCentralizedOptimizer(model,
-                                              world_size=world_size,
-                                              optimizer=optimizer,
-                                              use_cuda=use_cuda,
-                                              by_layer=False,
-                                              grad_clip=rnn_clip,
-                                              average_world=True)
+    c_optimizer = CustomCentralizedOptimizer(
+        model,
+        world_size=world_size,
+        optimizer=optimizer,
+        use_cuda=use_cuda,
+        by_layer=False,
+        grad_clip=rnn_clip,
+        average_world=True,
+    )
     # Create a learning rate scheduler for an optimizer
     scheduler = MultistepLearningRatesWithWarmup(optimizer, **scheduler_args)
 
@@ -192,7 +194,6 @@ def train_loop(
             c_optimizer.step(tracker=tracker)
 
             metrics_results = compute_train_batch_metrics(
-                loss.item(),
                 output,
                 target,
                 metrics,

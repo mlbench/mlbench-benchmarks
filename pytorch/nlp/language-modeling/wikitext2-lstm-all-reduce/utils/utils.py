@@ -5,7 +5,6 @@ from mlbench_core.utils import AverageMeter
 from mlbench_core.utils.pytorch.distributed import global_average
 
 
-
 def validation_round(
     loader, model, batch_size, n_tokens, metrics, loss_function, tracker
 ):
@@ -41,7 +40,7 @@ def validation_round(
 
             # Update metrics
             for metric in metrics:
-                metric_value = metric(loss, output, target)
+                metric_value = metric(output, target)
                 metric.update(metric_value, data.size(0))
 
     # Aggregate metrics and loss for all workers
