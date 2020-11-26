@@ -51,7 +51,7 @@ Task 3: Language Modelling
 3.a RNN, Wikitext2
 ^^^^^^^^^^^^^^^^^^
 
-.. include:: ../pytorch/nlp/language-modeling/wikitext2-rnn-all-reduce/Readme.rst
+.. include:: ../pytorch/nlp/language-modeling/wikitext2-lstm-all-reduce/Readme.rst
 
 Task 4: Machine Translation
 ---------------------------
