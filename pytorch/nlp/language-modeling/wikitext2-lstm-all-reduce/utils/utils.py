@@ -1,8 +1,8 @@
 import torch
-from torch.optim import SGD
+import torch.distributed as dist
 
 from mlbench_core.utils import AverageMeter
-from mlbench_core.utils.pytorch.distributed import global_average
+from mlbench_core.utils.pytorch.distributed import get_backend_tensor, global_average
 
 
 def repackage_hidden(h):
@@ -14,7 +14,22 @@ def repackage_hidden(h):
         return tuple(repackage_hidden(v) for v in h)
 
 
-def validation_round(loader, model, batch_size, metrics, loss_function, tracker):
+def set_sequence_lengths(dataset, random=False):
+    """Sets the sequences lengths and broadcasts to other workers
+
+    Args:
+        dataset (:obj:`mlbench_core.dataset.nlp.pytorch.Wikitext2Dataset`)
+
+    """
+    dataset.generate_sequence_lengths(random=random)
+    seq_lens = get_backend_tensor(dataset.sequence_lengths)
+    dist.broadcast(seq_lens, src=0)
+    dataset.sequence_lengths = seq_lens.cpu()
+
+
+def validation_round(
+    val_set, model, batch_size, metrics, loss_function, tracker, use_cuda=False
+):
     # finish one epoch training and to decide if we want to val our model.
     tracker.validation()
     tracker.validation_start()
@@ -30,7 +45,9 @@ def validation_round(loader, model, batch_size, metrics, loss_function, tracker)
     with torch.no_grad():
         hidden = model.init_hidden(batch_size)
 
-        for data, target in loader:
+        num_batches = val_set.num_batches()
+        for batch_idx in range(num_batches):
+            data, target = val_set.get_batch(batch_idx, cuda=use_cuda)
             # Inference
             output, hidden = model(data, hidden)
 

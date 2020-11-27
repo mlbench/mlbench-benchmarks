@@ -12,7 +12,8 @@ import time
 
 import torch.distributed as dist
 from torch.nn.modules.loss import CrossEntropyLoss
-from torch.optim import SGD
+from torch.optim import ASGD, SGD
+from utils import repackage_hidden, set_sequence_lengths, validation_round
 
 from mlbench_core.controlflow.pytorch.controlflow import (
     compute_train_batch_metrics,
@@ -28,8 +29,6 @@ from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
 from mlbench_core.utils.task_args import task_main
-
-from .utils.utils import repackage_hidden, validation_round
 
 LOG_EVERY_N_BATCHES = 25
 logger = logging.getLogger("mlbench")
@@ -51,8 +50,9 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    train_global_batch_size = 80
-    train_batch_size = train_global_batch_size
+    train_batch_size = 80
+    train_global_batch_size = train_batch_size * world_size
+
     val_batch_size = 10
     # Define the batch sizes here
 
@@ -79,7 +79,9 @@ def train_loop(
     grad_clip = 0.25
     alpha = 2
     beta = 1
+    nonmono = 5
 
+    # Load train/valid
     train_set = Wikitext2Dataset(
         dataset_dir, bptt=bptt, train=True, min_seq_len=min_seq_len
     )
@@ -88,9 +90,13 @@ def train_loop(
     )
     ntokens = len(train_set.dictionary)
 
-    train_set.generate_batches(train_batch_size)
-    val_set.generate_batches(val_batch_size)
     # Generate batches
+    train_set.generate_batches(
+        global_bsz=train_global_batch_size, worker_bsz=train_batch_size, rank=rank
+    )
+
+    val_set.generate_batches(val_batch_size)
+    val_set.generate_sequence_lengths()
 
     logger.info("Built dictionary of {} tokens".format(ntokens))
 
@@ -127,17 +133,24 @@ def train_loop(
     dist.barrier()
     tracker.start()
 
+    val_losses = []
     for epoch in range(0, train_epochs):
         model.train()
         tracker.train()
 
         # Init hidden state
         hidden = model.init_hidden(train_batch_size)
-        train_loader = train_set.get_loader(random_length=True, cuda=use_cuda)
 
-        num_batches_per_device_train = 1
-        for batch_idx, (data, targets) in enumerate(train_loader):
+        # Set random sequence lengths for epoch
+        set_sequence_lengths(train_set, random=True)
+        logger.info("Sequences set {}".format(train_set.sequence_lengths))
+
+        num_batches_per_device_train = train_set.num_batches()
+
+        for batch_idx in range(num_batches_per_device_train):
             tracker.batch_start()
+            data, targets = train_set.get_batch(batch_idx, cuda=use_cuda)
+
             seq_len = data.size(0)
 
             hidden = repackage_hidden(hidden)
@@ -173,7 +186,6 @@ def train_loop(
 
             tracker.record_batch_comp_metrics()
 
-            # scheduler.batch_step()
             tracker.batch_end()
 
             record_train_batch_stats(
@@ -186,24 +198,54 @@ def train_loop(
             )
         tracker.epoch_end()
 
-        val_loader = val_set.get_loader(cuda=use_cuda)
+        if type(c_optimizer.optimizer) == SGD:
+            metrics_values, loss = validation_round(
+                val_set,
+                model=model,
+                batch_size=val_batch_size,
+                metrics=metrics,
+                loss_function=criterion,
+                tracker=tracker,
+                use_cuda=use_cuda,
+            )
 
-        metrics_values, loss = validation_round(
-            loader=val_loader,
-            model=model,
-            batch_size=val_batch_size,
-            metrics=metrics,
-            loss_function=criterion,
-            tracker=tracker,
-        )
+            if len(val_losses) > nonmono and loss > min(val_losses[:-nonmono]):
+                logger.info("Switching optimizer to ASGD")
+                optimizer = ASGD(
+                    params=model.parameters(),
+                    lr=lr,
+                    lambd=0.0,
+                    weight_decay=weight_decay,
+                )
+                c_optimizer.optimizer = optimizer
+
+        else:
+            tmp = {}
+            for prm in model.parameters():
+                tmp[prm] = prm.data.clone()
+                prm.data = optimizer.state[prm]["ax"].clone()
+
+            metrics_values, loss = validation_round(
+                loader=val_set,
+                model=model,
+                batch_size=val_batch_size,
+                metrics=metrics,
+                loss_function=criterion,
+                tracker=tracker,
+                use_cuda=use_cuda,
+            )
+
+            for prm in model.parameters():
+                prm.data = tmp[prm].clone()
+        val_losses.append(loss)
 
         # Record validation stats
         is_best = record_validation_stats(
             metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
         )
-        checkpointer.save(
-            tracker, model, optimizer, None, tracker.current_epoch, is_best
-        )
+        # checkpointer.save(
+        #     tracker, model, optimizer, None, tracker.current_epoch, is_best
+        # )
         if tracker.goal_reached:
             print("Goal Reached!")
             dist.barrier()
@@ -223,7 +265,7 @@ def main(
     gpu=False,
     light_target=False,
 ):
-    r"""Main logic."""
+    """Main logic."""
 
     with initialize_backends(
         comm_backend=backend,
