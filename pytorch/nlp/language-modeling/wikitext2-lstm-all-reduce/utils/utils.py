@@ -1,8 +1,12 @@
+import logging
+
 import torch
 import torch.distributed as dist
 
 from mlbench_core.utils import AverageMeter
 from mlbench_core.utils.pytorch.distributed import get_backend_tensor, global_average
+
+logger = logging.getLogger("mlbench")
 
 
 def repackage_hidden(h):
@@ -42,12 +46,14 @@ def validation_round(
         metric.reset()
 
     # Each worker computer their own losses and metrics
+    ppl_values = []
     with torch.no_grad():
         hidden = model.init_hidden(batch_size)
 
         num_batches = val_set.num_batches()
         for batch_idx in range(num_batches):
             data, target = val_set.get_batch(batch_idx, cuda=use_cuda)
+            batch_seq_len = data.size(0)
             # Inference
             output, hidden = model(data, hidden)
 
@@ -55,18 +61,30 @@ def validation_round(
             loss = loss_function(output, target)
 
             # Update loss
-            losses.update(loss.item(), data.size(0))
+            losses.update(loss.item(), batch_seq_len)
 
             hidden = repackage_hidden(hidden)
 
             # Update metrics
             for metric in metrics:
                 metric_value = metric(output, target)
-                metric.update(metric_value, data.size(0))
+                metric.update(metric_value, 1)
 
     # Aggregate metrics and loss for all workers
-    metrics_averages = {metric: metric.average().item() for metric in metrics}
-    loss_average = global_average(losses.sum, losses.count).item()
+    loss_average = global_average(losses.sum, losses.count)
+    metrics_averages = {
+        metric: torch.exp(loss_average)
+        if metric.name == "Perplexity"
+        else metric.average().item()
+        for metric in metrics
+    }
+
+    logger.info(
+        "Got loss {}, avg metric={}".format(
+            loss_average,
+            [m.average().item() for m in metrics if m.name == "Perplexity"][0],
+        )
+    )
     tracker.validation_end()
 
-    return metrics_averages, loss_average
+    return metrics_averages, loss_average.item()

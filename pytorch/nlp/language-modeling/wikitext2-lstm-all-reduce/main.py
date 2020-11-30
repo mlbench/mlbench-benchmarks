@@ -1,12 +1,13 @@
-"""Training ResNet for CIFAR-10 dataset.
+"""Training AWD-LSTM for Wikitext2 DataSet
 
-This implements the 1a image recognition benchmark task, see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-image-classification-resnet-cifar-10
+This implements the Language Modeling task 3a,
+see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#task-3-language-modelling
 for more details.
 
-.. code-block:: bash
-    mpirun -n 2 --oversubscribe python resnet_cifar10_mpi.py --run_id 1
+Model and training taken from https://github.com/salesforce/awd-lstm-lm
 """
 import logging
+import math
 import os
 import time
 
@@ -23,6 +24,7 @@ from mlbench_core.controlflow.pytorch.controlflow import (
 from mlbench_core.dataset.nlp.pytorch import Wikitext2Dataset
 from mlbench_core.evaluation.goals import task3_time_to_perplexity_goal
 from mlbench_core.evaluation.pytorch.metrics import Perplexity
+from mlbench_core.lr_scheduler.pytorch.lr import LRLinearWarmUp
 from mlbench_core.models.pytorch.language_models import LSTMLanguageModel
 from mlbench_core.optim.pytorch.centralized import CustomCentralizedOptimizer
 from mlbench_core.utils import Tracker
@@ -50,6 +52,7 @@ def train_loop(
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
+    # Using batch scaling
     train_batch_size = 80
     train_global_batch_size = train_batch_size * world_size
 
@@ -75,6 +78,8 @@ def train_loop(
 
     # Optimizer args
     lr = 30
+    scaled_lr = lr * math.sqrt(world_size)
+    warmup_epochs = 3 * world_size
     weight_decay = 1.2e-6
     grad_clip = 0.25
     alpha = 2
@@ -106,7 +111,7 @@ def train_loop(
         model = model.cuda()
         criterion = criterion.cuda()
 
-    optimizer = SGD(model.parameters(), lr=lr, weight_decay=weight_decay)
+    optimizer = SGD(model.parameters(), lr=scaled_lr, weight_decay=weight_decay)
     c_optimizer = CustomCentralizedOptimizer(
         model=model,
         optimizer=optimizer,
@@ -117,6 +122,9 @@ def train_loop(
         average_custom=True,
     )
 
+    scheduler = LRLinearWarmUp(
+        optimizer, init_lr=lr, scaled_lr=scaled_lr, warmup_duration=warmup_epochs
+    )
     metrics = [Perplexity()]
 
     checkpointer = Checkpointer(
@@ -128,7 +136,7 @@ def train_loop(
     else:
         goal = task3_time_to_perplexity_goal(70)
 
-    tracker = Tracker(metrics, run_id, rank, goal=goal)
+    tracker = Tracker(metrics, run_id, rank, goal=goal, minimize=True)
 
     dist.barrier()
     tracker.start()
@@ -143,7 +151,6 @@ def train_loop(
 
         # Set random sequence lengths for epoch
         set_sequence_lengths(train_set, random=True)
-        logger.info("Sequences set {}".format(train_set.sequence_lengths))
 
         num_batches_per_device_train = train_set.num_batches()
 
@@ -176,7 +183,6 @@ def train_loop(
             tracker.record_batch_backprop()
 
             c_optimizer.step(denom=bptt / seq_len, tracker=tracker)
-            tracker.record_batch_opt_step()
 
             metrics_results = compute_train_batch_metrics(
                 output,
@@ -198,6 +204,7 @@ def train_loop(
             )
         tracker.epoch_end()
 
+        # Still in regular SGD
         if type(c_optimizer.optimizer) == SGD:
             metrics_values, loss = validation_round(
                 val_set,
@@ -208,17 +215,18 @@ def train_loop(
                 tracker=tracker,
                 use_cuda=use_cuda,
             )
-
+            scheduler.step()
             if len(val_losses) > nonmono and loss > min(val_losses[:-nonmono]):
                 logger.info("Switching optimizer to ASGD")
                 optimizer = ASGD(
                     params=model.parameters(),
-                    lr=lr,
+                    lr=scheduler.get_last_lr()[0],
                     lambd=0.0,
                     weight_decay=weight_decay,
                 )
                 c_optimizer.optimizer = optimizer
 
+        # Switched to ASGD, no scheduling
         else:
             tmp = {}
             for prm in model.parameters():
@@ -226,7 +234,7 @@ def train_loop(
                 prm.data = optimizer.state[prm]["ax"].clone()
 
             metrics_values, loss = validation_round(
-                loader=val_set,
+                val_set,
                 model=model,
                 batch_size=val_batch_size,
                 metrics=metrics,
