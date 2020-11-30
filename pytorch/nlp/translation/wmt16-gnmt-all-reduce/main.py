@@ -1,8 +1,10 @@
 """Training GNMT for WMT16 Dataset
 
-This implements the machine translation benchmark tasks,
-# TODO add link to docs
-"""
+This implements the Machine Translation task 4b
+see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#a-lstm-wmt16-en-de
+for more details.
+
+Model and training taken from https://github.com/mlperf/training_results_v0.6/tree/master/NVIDIA/benchmarks/gnmt"""
 import argparse
 import json
 import logging
