@@ -23,7 +23,7 @@ def set_sequence_lengths(dataset, random=False):
 
     Args:
         dataset (:obj:`mlbench_core.dataset.nlp.pytorch.Wikitext2Dataset`)
-
+        random (bool): Use random length. Default False
     """
     dataset.generate_sequence_lengths(random=random)
     seq_lens = get_backend_tensor(dataset.sequence_lengths)
@@ -34,6 +34,20 @@ def set_sequence_lengths(dataset, random=False):
 def validation_round(
     val_set, model, batch_size, metrics, loss_function, tracker, use_cuda=False
 ):
+    """Performs a validation round
+
+    Args:
+        val_set (:obj:): Validation set
+        model (:obj:`torch.nn.Module`): Model to evaluate
+        batch_size (int): Validation batch size
+        metrics (list): List of metrics to compute
+        loss_function (:obj:`torch.nn.Module`): Loss function
+        tracker (:obj:`mlbench_core.utils.Tracker`): Tracker object
+        use_cuda (bool): Use GPU acceleration
+
+    Returns:
+        (dict, float): Metric averages and total loss average
+    """
     # finish one epoch training and to decide if we want to val our model.
     tracker.validation()
     tracker.validation_start()
@@ -46,7 +60,6 @@ def validation_round(
         metric.reset()
 
     # Each worker computer their own losses and metrics
-    ppl_values = []
     with torch.no_grad():
         hidden = model.init_hidden(batch_size)
 
@@ -73,7 +86,7 @@ def validation_round(
     # Aggregate metrics and loss for all workers
     loss_average = global_average(losses.sum, losses.count)
     metrics_averages = {
-        metric: torch.exp(loss_average)
+        metric: torch.exp(loss_average).item()
         if metric.name == "Perplexity"
         else metric.average().item()
         for metric in metrics

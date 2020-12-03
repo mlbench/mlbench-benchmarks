@@ -79,7 +79,7 @@ def train_loop(
     # Optimizer args
     lr = 30
     scaled_lr = lr * math.sqrt(world_size)
-    warmup_epochs = 3 * world_size
+    warmup_epochs = 5 * world_size
     weight_decay = 1.2e-6
     grad_clip = 0.25
     alpha = 2
@@ -119,16 +119,18 @@ def train_loop(
         agg_grad=True,
         grad_clip=grad_clip,
         world_size=world_size,
-        average_custom=True,
     )
 
     scheduler = LRLinearWarmUp(
-        optimizer, init_lr=lr, scaled_lr=scaled_lr, warmup_duration=warmup_epochs
+        optimizer,
+        init_lr=lr / world_size,
+        scaled_lr=scaled_lr,
+        warmup_duration=warmup_epochs,
     )
     metrics = [Perplexity()]
 
     checkpointer = Checkpointer(
-        ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.BEST
+        ckpt_run_dir=ckpt_run_dir, rank=rank, freq=CheckpointFreq.NONE
     )
 
     if light_target:
@@ -159,6 +161,9 @@ def train_loop(
             data, targets = train_set.get_batch(batch_idx, cuda=use_cuda)
 
             seq_len = data.size(0)
+            lr_original = optimizer.param_groups[0]["lr"]
+            batch_lr = lr_original * seq_len / bptt
+            optimizer.param_groups[0]["lr"] = batch_lr
 
             hidden = repackage_hidden(hidden)
             c_optimizer.zero_grad()
@@ -182,8 +187,9 @@ def train_loop(
             loss.backward()
             tracker.record_batch_backprop()
 
-            c_optimizer.step(denom=bptt / seq_len, tracker=tracker)
+            c_optimizer.step(tracker=tracker)
 
+            optimizer.param_groups[0]["lr"] = lr_original
             metrics_results = compute_train_batch_metrics(
                 output,
                 targets,
@@ -216,12 +222,14 @@ def train_loop(
                 use_cuda=use_cuda,
             )
             scheduler.step()
+            logger.info("Using LR={}".format(scheduler.get_last_lr()))
             if len(val_losses) > nonmono and loss > min(val_losses[:-nonmono]):
                 logger.info("Switching optimizer to ASGD")
                 optimizer = ASGD(
                     params=model.parameters(),
                     lr=scheduler.get_last_lr()[0],
                     lambd=0.0,
+                    t0=0,
                     weight_decay=weight_decay,
                 )
                 c_optimizer.optimizer = optimizer
@@ -251,9 +259,9 @@ def train_loop(
         is_best = record_validation_stats(
             metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
         )
-        # checkpointer.save(
-        #     tracker, model, optimizer, None, tracker.current_epoch, is_best
-        # )
+        checkpointer.save(
+            tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
+        )
         if tracker.goal_reached:
             print("Goal Reached!")
             dist.barrier()
