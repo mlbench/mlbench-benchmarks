@@ -1,0 +1,96 @@
+name: mlbench-benchmarks
+
+on:
+  push:
+    branches:
+      - develop
+  pull_request:
+    branches:
+      - develop
+
+jobs:
+
+  # PyTorch tasks
+  # Task 1a
+  pytorch-cifar10-resnet20-all-reduce:
+    name: "Build PyTorch CIFAR10 ResNet-20"
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: pytorch-cifar10-resnet20-all-reduce
+      IMAGE_DIR: ./pytorch/imagerecognition/cifar10-resnet20-all-reduce
+    steps:
+      - uses: actions/checkout@v2
+      - name: "Build image"
+        run: docker build -t ${IMAGE_NAME}:travis-ci-test ${IMAGE_DIR}
+
+  pytorch-cifar10-resnet20-ddp:
+    name: "Build PyTorch CIFAR10 ResNet-20 (DDP)"
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: pytorch-cifar10-resnet20-ddp
+      IMAGE_DIR: ./pytorch/imagerecognition/cifar10-resnet20-distributed-data-parallel
+    steps:
+      - uses: actions/checkout@v2
+      - name: "Build image"
+        run: docker build -t ${IMAGE_NAME}:travis-ci-test ${IMAGE_DIR}
+
+  # Task 2a
+  pytorch-epsilon-logistic-regression-all-reduce:
+    name: "Build PyTorch Epsilon Logistic Regression"
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: pytorch-epsilon-logistic-regression-all-reduce
+      IMAGE_DIR: ./pytorch/linearmodels/epsilon-logistic-regression-all-reduce
+    steps:
+      - uses: actions/checkout@v2
+      - name: "Build image"
+        run: docker build -t ${IMAGE_NAME}:travis-ci-test ${IMAGE_DIR}
+
+  # Task 3a
+  pytorch-openmpi-wikitext2-rnn-lm:
+    name: "Build PyTorch Wikitext2 RNN"
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: pytorch-openmpi-wikitext2-rnn-lm
+      IMAGE_DIR: ./pytorch/nlp/language-modeling/openmpi-wikitext2-rnn-lm
+    steps:
+      - uses: actions/checkout@v2
+      - name: "Build image"
+        run: docker build -t ${IMAGE_NAME}:travis-ci-test ${IMAGE_DIR}
+
+  # Task 4a
+  pytorch-wmt16-gnmt-all-reduce:
+    name: "Build PyTorch WMT16 GNMT"
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: pytorch-wmt16-gnmt-all-reduce
+      IMAGE_DIR: ./pytorch/nlp/translation/wmt16-gnmt-all-reduce
+    steps:
+      - uses: actions/checkout@v2
+      - name: "Build image"
+        run: docker build -t ${IMAGE_NAME}:travis-ci-test ${IMAGE_DIR}
+
+  # Task 4b
+  pytorch-wmt17-transformer-all-reduce:
+    name: "Build PyTorch WMT17 Transformer"
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: pytorch-wmt17-transformer-all-reduce
+      IMAGE_DIR: ./pytorch/nlp/translation/wmt17-transformer-all-reduce
+    steps:
+      - uses: actions/checkout@v2
+      - name: "Build image"
+        run: docker build -t ${IMAGE_NAME}:travis-ci-test ${IMAGE_DIR}
+
+  # Tensorflow tasks
+  # Task 1a
+  tensorflow-openmpi-cifar10-resnet20-all-reduce:
+    name: "Build Tensorflow CIFAR10 ResNet-20"
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: tensorflow-openmpi-cifar10-resnet20-all-reduce
+      IMAGE_DIR: ./tensorflow/imagerecognition/openmpi-cifar10-resnet20-all-reduce
+    steps:
+      - uses: actions/checkout@v2
+      - name: "Build image"
+        run: docker build -t ${IMAGE_NAME}:travis-ci-test ${IMAGE_DIR}
