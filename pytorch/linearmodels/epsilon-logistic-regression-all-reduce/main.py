@@ -54,7 +54,7 @@ def train_loop(
     use_cuda=False,
     light_target=False,
 ):
-    r"""Main logic."""
+    """Main logic."""
     num_parallel_workers = 2
     max_batch_per_epoch = None
     train_epochs = 20
@@ -183,7 +183,6 @@ def train_loop(
 
                 # Aggregate gradients/parameters from all workers and apply updates to model
                 optimizer.step(tracker=tracker)
-                tracker.record_batch_opt_step()
 
                 metrics_results = compute_train_batch_metrics(
                     output,
