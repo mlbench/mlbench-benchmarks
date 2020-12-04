@@ -47,12 +47,12 @@ jobs:
         run: docker build -t ${IMAGE_NAME}:travis-ci-test ${IMAGE_DIR}
 
   # Task 3a
-  pytorch-openmpi-wikitext2-rnn-lm:
-    name: "Build PyTorch Wikitext2 RNN"
+  pytorch-wikitext2-lstm-all-reduce:
+    name: "Build PyTorch Wikitext2 LSTM"
     runs-on: ubuntu-latest
     env:
-      IMAGE_NAME: pytorch-openmpi-wikitext2-rnn-lm
-      IMAGE_DIR: ./pytorch/nlp/language-modeling/openmpi-wikitext2-rnn-lm
+      IMAGE_NAME: pytorch-wikitext2-lstm-all-reduce
+      IMAGE_DIR: ./pytorch/nlp/language-modeling/wikitext2-lstm-all-reduce
     steps:
       - uses: actions/checkout@v2
       - name: "Build image"
