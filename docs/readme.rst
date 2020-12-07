@@ -48,8 +48,10 @@ Task 2: Linear Learning
 Task 3: Language Modelling
 --------------------------
 
-3.a TODO
-^^^^^^^^
+3.a RNN, Wikitext2
+^^^^^^^^^^^^^^^^^^
+
+.. include:: ../pytorch/nlp/language-modeling/wikitext2-lstm-all-reduce/Readme.rst
 
 Task 4: Machine Translation
 ---------------------------

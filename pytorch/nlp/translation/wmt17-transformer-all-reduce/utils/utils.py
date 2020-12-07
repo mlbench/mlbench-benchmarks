@@ -170,7 +170,7 @@ def validation_round(loader, metrics, criterion, translator, tracker, use_cuda=F
 
             translated, targets = translator.translate_batch(batch)
             for metric in metrics:
-                metric_value = metric(loss.item(), translated, targets)
+                metric_value = metric(translated, targets)
                 size = batch["target"].size(0)  # Number of translated sentences
                 metric.update(metric_value, size)
 

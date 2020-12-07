@@ -42,6 +42,7 @@ from mlbench_core.optim.pytorch.centralized import CentralizedSGD
 from mlbench_core.utils import Tracker
 from mlbench_core.utils.pytorch import initialize_backends
 from mlbench_core.utils.pytorch.checkpoint import Checkpointer, CheckpointFreq
+from mlbench_core.utils.task_args import task_main
 
 
 def train_loop(
@@ -53,7 +54,7 @@ def train_loop(
     use_cuda=False,
     light_target=False,
 ):
-    r"""Main logic."""
+    """Main logic."""
     num_parallel_workers = 2
     max_batch_per_epoch = None
     train_epochs = 20
@@ -184,7 +185,6 @@ def train_loop(
                 optimizer.step(tracker=tracker)
 
                 metrics_results = compute_train_batch_metrics(
-                    loss.item(),
                     output,
                     target,
                     metrics,
@@ -294,66 +294,4 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Process run parameters")
-    parser.add_argument("--run_id", type=str, default="1", help="The id of the run")
-    parser.add_argument(
-        "--root-dataset",
-        type=str,
-        default="/datasets",
-        help="Default root directory to dataset.",
-    )
-    parser.add_argument(
-        "--root-checkpoint",
-        type=str,
-        default="/checkpoint",
-        help="Default root directory to checkpoint.",
-    )
-    parser.add_argument(
-        "--root-output",
-        type=str,
-        default="/output",
-        help="Default root directory to output.",
-    )
-    parser.add_argument(
-        "--validation_only",
-        action="store_true",
-        default=False,
-        help="Only validate from checkpoints.",
-    )
-    parser.add_argument(
-        "--gpu", action="store_true", default=False, help="Train with GPU"
-    )
-    parser.add_argument(
-        "--light",
-        action="store_true",
-        default=False,
-        help="Train to light target metric goal",
-    )
-    parser.add_argument("--rank", type=int, default=1, help="The rank of the process")
-    parser.add_argument(
-        "--backend", type=str, default="mpi", help="PyTorch distributed backend"
-    )
-    parser.add_argument("--hosts", type=str, help="The list of hosts")
-
-    args = parser.parse_args()
-
-    uid = "benchmark"
-    dataset_dir = os.path.join(args.root_dataset, "torch", "epsilon")
-    ckpt_run_dir = os.path.join(args.root_checkpoint, uid)
-    output_dir = os.path.join(args.root_output, uid)
-    os.makedirs(dataset_dir, exist_ok=True)
-    os.makedirs(ckpt_run_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
-
-    main(
-        args.run_id,
-        dataset_dir,
-        ckpt_run_dir,
-        output_dir,
-        args.rank,
-        args.backend,
-        args.hosts,
-        validation_only=args.validation_only,
-        gpu=args.gpu,
-        light_target=args.light,
-    )
+    task_main(main)
