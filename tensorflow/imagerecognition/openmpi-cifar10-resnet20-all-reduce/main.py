@@ -15,19 +15,20 @@ Launch::
 import argparse
 import logging
 import os
+
 import tensorflow as tf
-
-
-from mlbench_core.utils.tensorflow import initialize_backends, default_session_config
-from mlbench_core.models.tensorflow.resnet_model import Cifar10Model
-from mlbench_core.dataset.imagerecognition.tensorflow.cifar10 import DatasetCifar
-from mlbench_core.lr_scheduler.tensorflow.lr import manual_stepping
-from mlbench_core.evaluation.tensorflow.metrics import TopKAccuracy
+from mlbench_core.controlflow.tensorflow.train_validation import train_round, \
+    validation_round
+from mlbench_core.dataset.imagerecognition.tensorflow.cifar10 import \
+    DatasetCifar
+from mlbench_core.evaluation.goals import task1_time_to_accuracy_light_goal, \
+    task1_time_to_accuracy_goal
 from mlbench_core.evaluation.tensorflow.criterion import \
     softmax_cross_entropy_with_logits_v2_l2_regularized
-from mlbench_core.controlflow.tensorflow.train_validation import train_round, validation_round
+from mlbench_core.evaluation.tensorflow.metrics import TopKAccuracy
+from mlbench_core.lr_scheduler.tensorflow.lr import manual_stepping
+from mlbench_core.models.tensorflow.resnet_model import Cifar10Model
 from mlbench_core.utils import Tracker
-from mlbench_core.evaluation.goals import task1_time_to_accuracy_light_goal, task1_time_to_accuracy_goal
 
 
 def define_graph(inputs, labels, is_training, batch_size, replicas_to_aggregate):
@@ -175,9 +176,9 @@ def main(is_ps, run_id, rank, world_size, cluster_spec, batch_size,
                 final_epoch = 164
 
                 if light_target:
-                    goal = task1_time_to_accuracy_light_goal
+                    goal = task1_time_to_accuracy_light_goal()
                 else:
-                    goal = task1_time_to_accuracy_goal
+                    goal = task1_time_to_accuracy_goal()
 
                 tracker = Tracker(metrics, run_id, rank, goal=goal)
                 tracker.start()

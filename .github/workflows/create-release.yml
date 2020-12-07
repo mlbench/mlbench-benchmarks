@@ -1,0 +1,70 @@
+# This is a basic workflow that is manually triggered
+
+name: Create a new MLBench release
+
+# Controls when the action will run. Workflow runs when manually triggered using the UI
+# or API.
+on:
+  workflow_dispatch:
+    # Inputs the workflow accepts.
+    inputs:
+      patch:
+        # Friendly description to be shown in the UI instead of 'name'
+        description: 'Patch [major].[minor].[patch]-[dev]'
+        # Input has to be provided for the workflow to run
+        required: true
+      futureRelease:
+        description: 'Future release Number'
+        required: true
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "greet"
+  create-release:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+    # Create release branch
+    - name: Create Release Branch
+      uses: peterjgrainger/action-create-branch@v2.0.1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        branch: release/v${{ github.event.inputs.futureRelease}}
+    # Checkout Branch
+    - name: Checkout release branch
+      uses: actions/checkout@v2.3.4
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        ref: release/v${{ github.event.inputs.futureRelease}}
+    # Bump version
+    - name: setup python
+      uses: actions/setup-python@v2
+      with:
+       python-version: 3.7
+    - name: Bump version
+      run: pip install bumpversion && bumpversion --allow-dirty --no-tag --no-commit ${{ github.event.inputs.patch }}
+    # Generate changelog
+    - name: Find Latest Tag
+      # You may pin to the exact commit or the version.
+      # uses: oprypin/find-latest-tag@cc85180adff5be91282940868529accfc5ab40a7
+      uses: oprypin/find-latest-tag@v1.0.4
+      with:
+        repository: mlbench/mlbench-benchmarks
+      id: previousTag
+    - name: Generate Changelog using github-changelog-generator
+      # You may pin to the exact commit or the version.
+      # uses: faberNovel/github-changelog-generator-action@5fcc510347703c66014a0d54c2c6dfb6c1851eaa
+      uses: faberNovel/github-changelog-generator-action@v1.0.0-alpha02
+      with:
+        options: -u mlbench -p mlbench-benchmarks -t ${{ secrets.GITHUB_TOKEN }} \
+            --release-branch release/v${{ github.event.inputs.futureRelease}} --future-release v${{ github.event.inputs.futureRelease }} \
+            --since-tag ${{ steps.previousTag.outputs.tag }} --base CHANGELOG.md
+    - name: Commit Changes
+      uses: stefanzweifel/git-auto-commit-action@v4.7.2
+      with:
+        commit_message: 'Bump version and update Changelog'
+

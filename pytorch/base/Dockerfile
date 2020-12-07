@@ -1,80 +1,27 @@
-#FROM nvidia/cuda:9.0-cudnn7-devel-ubuntu16.04 as mlbench-worker-base
-FROM nvidia/cuda:9.0-devel-ubuntu16.04 as mlbench-worker-base
-LABEL maintainer "NVIDIA CORPORATION <cudatools@nvidia.com>"
+# Cuda 10.1.243 Base image, CUDNN 7.6.5.32, NCCL 2708
+FROM nvidia/cuda:10.1-cudnn7-devel-ubuntu16.04 as mlbench-worker-base
 
-ENV CUDNN_VERSION 7.3.0.29
-LABEL com.nvidia.cudnn.version="${CUDNN_VERSION}"
+ENV PYTHON_VERSION=3.7
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-            libcudnn7=$CUDNN_VERSION-1+cuda9.0 \
-            libcudnn7-dev=$CUDNN_VERSION-1+cuda9.0 && \
-    apt-mark hold libcudnn7 && \
-    rm -rf /var/lib/apt/lists/*
-
-# TODO: reduce size and complexity of image.
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    make \
-    libc-dev \
-    musl-dev \
-    openssh-server \
-    g++ \
-    git \
-    curl \
-    sudo \
-    iproute2
-
-# -------------------- SSH --------------------
-RUN cat /etc/ssh/ssh_config | grep -v StrictHostKeyChecking > /etc/ssh/ssh_config.new && \
-    echo "    StrictHostKeyChecking no" >> /etc/ssh/ssh_config.new && \
-    mv /etc/ssh/ssh_config.new /etc/ssh/ssh_config
-
-ARG SSH_USER=root
-ENV SSH_USER=$SSH_USER
-RUN mkdir -p /ssh-key/$SSH_USER && chown -R $SSH_USER:$SSH_USER /ssh-key/$SSH_USER
-RUN mkdir -p /.sshd/host_keys && \
-  chown -R $SSH_USER:$SSH_USER /.sshd/host_keys && chmod 700 /.sshd/host_keys
-RUN mkdir -p /.sshd/user_keys/$SSH_USER && \
-  chown -R $SSH_USER:$SSH_USER /.sshd/user_keys/$SSH_USER && chmod 700 /.sshd/user_keys/$SSH_USER
-VOLUME /ssh-key/$SSH_USER
-
-# -----–––---------------------- Cuda Dependency --------------------
-RUN echo "deb http://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu1604/x86_64 /" > /etc/apt/sources.list.d/nvidia-ml.list
-RUN apt-get update && apt-get install -y --no-install-recommends --allow-downgrades \
-        --allow-change-held-packages \
-         libnccl2=2.0.5-3+cuda9.0 \
-         libnccl-dev=2.0.5-3+cuda9.0 &&\
-     rm -rf /var/lib/apt/lists/*
-
-# -------------------- Conda environment --------------------
-RUN curl -o ~/miniconda.sh -O  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  && \
-     sh ~/miniconda.sh -b -p /conda && rm ~/miniconda.sh
-ENV PATH /conda/bin:$PATH
-ENV LD_LIBRARY_PATH /conda/lib:$LD_LIBRARY_PATH
-
-# TODO: Source code in Channel Anaconda can be outdated, switch to conda-forge if posible.
-RUN conda install -y -c anaconda numpy pyyaml scipy mkl setuptools cmake cffi mkl-include typing \
-    && conda install -y -c mingfeima mkldnn \
-    && conda install -y -c soumith magma-cuda90 \
-    && conda install -y -c conda-forge python-lmdb opencv numpy \
-    && conda clean --all -y
 
 # -------------------- Open MPI --------------------
+
+# Download and install OpenMPI v4.0.5
 RUN mkdir /.openmpi/
 RUN apt-get update && apt-get install -y --no-install-recommends wget \
-    && wget https://www.open-mpi.org/software/ompi/v3.0/downloads/openmpi-3.0.0.tar.gz\
-    && gunzip -c openmpi-3.0.0.tar.gz | tar xf - \
-    && cd openmpi-3.0.0 \
+    && wget https://download.open-mpi.org/release/open-mpi/v4.0/openmpi-4.0.5.tar.gz\
+    && gunzip -c openmpi-4.0.5.tar.gz | tar xf - \
+    && cd openmpi-4.0.5 \
     && ./configure --prefix=/.openmpi/ --with-cuda\
     && make all install \
-    && rm /openmpi-3.0.0.tar.gz \
-    && rm -rf /openmpi-3.0.0 \
+    && rm /openmpi-4.0.5.tar.gz \
+    && rm -rf /openmpi-4.0.5 \
     && apt-get remove -y wget
 
 ENV PATH /.openmpi/bin:$PATH
 ENV LD_LIBRARY_PATH /.openmpi/lib:$LD_LIBRARY_PATH
 
+# Add to paths
 RUN mv /.openmpi/bin/mpirun /.openmpi/bin/mpirun.real && \
     echo '#!/bin/bash' > /.openmpi/bin/mpirun && \
     echo "/.openmpi/bin/mpirun.real" '--allow-run-as-root "$@"' >> /.openmpi/bin/mpirun && \
@@ -91,24 +38,72 @@ RUN echo export 'PATH=$HOME/conda/envs/pytorch-py$PYTHON_VERSION/bin:$HOME/.open
 RUN echo export 'LD_LIBRARY_PATH=$HOME/.openmpi/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
 
 
-# -------------------- PyTorch --------------------
-ENV CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
+# -------------------- System dependencies --------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        curl \
+        g++ \
+        gcc \
+        git \
+        iproute2 \
+        libc-dev \
+        make \
+        musl-dev \
+#        libjpeg-dev \
+#        libpng-dev \
+        openssh-server && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install basic dependencies
-# RUN git clone --recursive https://github.com/pytorch/pytorch && cd pytorch && python setup.py install
+
+
+# -------------------- SSH --------------------
+RUN cat /etc/ssh/ssh_config | grep -v StrictHostKeyChecking > /etc/ssh/ssh_config.new && \
+    echo "    StrictHostKeyChecking no" >> /etc/ssh/ssh_config.new && \
+    mv /etc/ssh/ssh_config.new /etc/ssh/ssh_config
+
+ARG SSH_USER=root
+ENV SSH_USER=$SSH_USER
+RUN mkdir -p /ssh-key/$SSH_USER && chown -R $SSH_USER:$SSH_USER /ssh-key/$SSH_USER
+RUN mkdir -p /.sshd/host_keys && \
+  chown -R $SSH_USER:$SSH_USER /.sshd/host_keys && chmod 700 /.sshd/host_keys
+RUN mkdir -p /.sshd/user_keys/$SSH_USER && \
+  chown -R $SSH_USER:$SSH_USER /.sshd/user_keys/$SSH_USER && chmod 700 /.sshd/user_keys/$SSH_USER
+VOLUME /ssh-key/$SSH_USER
+
+
+# -------------------- Conda environment --------------------
+RUN curl -o ~/miniconda.sh -LO  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  && \
+     sh ~/miniconda.sh -b -p /conda && rm ~/miniconda.sh
+ENV PATH /conda/bin:$PATH
+ENV LD_LIBRARY_PATH /conda/lib:$LD_LIBRARY_PATH
+
+# Install torch dependencies
+RUN conda install -y python=$PYTHON_VERSION numpy pyyaml scipy mkl mkl-include ninja cython typing \
+    && conda install -y -c pytorch magma-cuda101 \
+    && conda clean -ya
+#RUN conda install -y -c anaconda numpy pyyaml scipy mkl setuptools cmake cffi mkl-include typing \
+#    && conda install -y -c mingfeima mkldnn \
+#    && conda install -y -c soumith magma-cuda101 \
+#    && conda install -y -c conda-forge python-lmdb opencv numpy \
+#    && conda clean --all -y
+
+
+
+# -------------------- PyTorch --------------------
+# Build pytorch from source 1.7.0a0
 RUN git clone --recursive https://github.com/pytorch/pytorch && \
     cd pytorch && \
-    git checkout tags/v1.0.0 && \
-    git submodule update --init && \
-    TORCH_CUDA_ARCH_LIST="3.5 3.7 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
-    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" \
-    pip install -v . && \
-    rm -rf /pytorch
+    git checkout v1.7.0 && \
+    git submodule sync && \
+    git submodule update --init --recursive && \
+    TORCH_CUDA_ARCH_LIST="3.5 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all"  \
+    NCCL_INCLUDE_DIR="/usr/include/" USE_NCCL=1 USE_SYSTEM_NCCL=1 USE_MKLDNN=1 \
+    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" PYTORCH_BUILD_VERSION=1.7.0 PYTORCH_BUILD_NUMBER=1 \
+    pip install -v .
 
-
-
-RUN git clone https://github.com/pytorch/vision.git && cd vision && pip install -v .
-
+#RUN git clone https://github.com/pytorch/vision.git && cd vision && git checkout tags/v0.5.0 &&  pip install -v .
 # RUN pip install -U git+https://github.com/ppwwyyxx/tensorpack.git
 
 # RUN conda install -y -c anaconda msgpack
@@ -120,10 +115,7 @@ RUN git clone https://github.com/pytorch/vision.git && cd vision && pip install 
 # -------------------- patch --------------------
 # libGL.so.1 might be lost when nvidia driver is installed
 # sudo apt-get install freeglut3-dev build-essential libx11-dev libxmu-dev libxi-dev libgl1-mesa-glx libglu1-mesa libglu1-mesa-dev libglfw3-dev libgles2-mesa-dev
-RUN apt-get install -y libgl1-mesa-glx
-
-RUN pip install kubernetes dill
-
+#RUN apt-get install -y libgl1-mesa-glx
 # -------------------- Others --------------------
 RUN echo "orte_keep_fqdn_hostnames=t" >> /.openmpi/etc/openmpi-mca-params.conf
 
