@@ -10,6 +10,16 @@ on:
 
 jobs:
 
+  docs:
+    name: "Build docs"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: "Install dependencies"
+        run: pip install -r docs/requirements.txt
+      - name: "Build docs"
+        run: make docs
+
   # PyTorch tasks
   # Task 1a
   pytorch-cifar10-resnet20-all-reduce:
