@@ -329,7 +329,6 @@ def train_loop(
                 model,
                 fp_optimizer.optimizer,
                 scheduler,
-                tracker.current_epoch,
                 is_best,
             )
 
