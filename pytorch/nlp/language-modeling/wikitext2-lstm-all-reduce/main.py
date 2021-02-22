@@ -5,14 +5,17 @@ see https://mlbench.readthedocs.io/en/latest/benchmark-tasks.html#task-3-languag
 for more details.
 
 Model and training taken from https://github.com/salesforce/awd-lstm-lm
+
+Paper https://arxiv.org/pdf/1708.02182.pdf
 """
 import logging
 import math
 import os
 import time
 
+import torch
 import torch.distributed as dist
-from torch.nn.modules.loss import CrossEntropyLoss
+from torch.nn.modules.loss import _Loss
 from torch.optim import ASGD, SGD
 from utils import repackage_hidden, set_sequence_lengths, validation_round
 
@@ -24,7 +27,6 @@ from mlbench_core.controlflow.pytorch.controlflow import (
 from mlbench_core.dataset.nlp.pytorch import Wikitext2Dataset
 from mlbench_core.evaluation.goals import task3_time_to_perplexity_goal
 from mlbench_core.evaluation.pytorch.metrics import Perplexity
-from mlbench_core.lr_scheduler.pytorch.lr import LRLinearWarmUp
 from mlbench_core.models.pytorch.language_models import LSTMLanguageModel
 from mlbench_core.optim.pytorch.centralized import CustomCentralizedOptimizer
 from mlbench_core.utils import Tracker
@@ -34,6 +36,18 @@ from mlbench_core.utils.task_args import task_main
 
 LOG_EVERY_N_BATCHES = 25
 logger = logging.getLogger("mlbench")
+
+
+class CrossEntropyLoss(_Loss):
+    """SplitCrossEntropyLoss calculates an approximate softmax"""
+
+    def forward(self, hiddens, targets):
+        softmaxed_head_res = torch.nn.functional.log_softmax(hiddens, dim=-1)
+
+        entropy = -torch.gather(softmaxed_head_res, dim=1, index=targets.view(-1, 1))
+        total_loss = entropy.float().sum()
+
+        return total_loss.div(targets.size(0))
 
 
 def train_loop(
@@ -53,11 +67,10 @@ def train_loop(
     world_size = dist.get_world_size()
 
     # Using batch scaling
-    train_batch_size = 80
+    train_batch_size = 20
     train_global_batch_size = train_batch_size * world_size
 
     val_batch_size = 10
-    # Define the batch sizes here
 
     # Dataset arguments
     bptt = 70
@@ -68,18 +81,17 @@ def train_loop(
         "ninp": 400,
         "nhid": 1150,
         "nlayers": 3,
-        "dropout": 0.4,
-        "dropouth": 0.2,
-        "dropouti": 0.65,
-        "dropoute": 0.1,
+        "dropout": 0.4,  # LSTM Output dropout (last layer)
+        "dropouth": 0.2,  # Hidden LSTM layers dropout Maybe 0.3 according to paper
+        "dropouti": 0.65,  # LSTM input dropout
+        "dropoute": 0.1,  # Embedding dropout
         "wdrop": 0.5,
         "tie_weights": True,
     }
 
     # Optimizer args
-    lr = 30
+    lr = 15
     scaled_lr = lr * math.sqrt(world_size)
-    warmup_epochs = 5 * world_size
     weight_decay = 1.2e-6
     grad_clip = 0.25
     alpha = 2
@@ -106,7 +118,7 @@ def train_loop(
     logger.info("Built dictionary of {} tokens".format(ntokens))
 
     model = LSTMLanguageModel(ntokens, **model_args)
-    criterion = CrossEntropyLoss(reduction="mean")
+    criterion = CrossEntropyLoss()
     if use_cuda:
         model = model.cuda()
         criterion = criterion.cuda()
@@ -119,14 +131,9 @@ def train_loop(
         agg_grad=True,
         grad_clip=grad_clip,
         world_size=world_size,
+        average_world=True,
     )
 
-    scheduler = LRLinearWarmUp(
-        optimizer,
-        init_lr=lr / world_size,
-        scaled_lr=scaled_lr,
-        warmup_duration=warmup_epochs,
-    )
     metrics = [Perplexity()]
 
     checkpointer = Checkpointer(
@@ -160,6 +167,7 @@ def train_loop(
             tracker.batch_start()
             data, targets = train_set.get_batch(batch_idx, cuda=use_cuda)
 
+            # LR depends on chosen sequence length
             seq_len = data.size(0)
             lr_original = optimizer.param_groups[0]["lr"]
             batch_lr = lr_original * seq_len / bptt
@@ -221,26 +229,27 @@ def train_loop(
                 tracker=tracker,
                 use_cuda=use_cuda,
             )
-            scheduler.step()
-            logger.info("Using LR={}".format(scheduler.get_last_lr()))
+
             if len(val_losses) > nonmono and loss > min(val_losses[:-nonmono]):
                 logger.info("Switching optimizer to ASGD")
                 optimizer = ASGD(
                     params=model.parameters(),
-                    lr=scheduler.get_last_lr()[0],
+                    lr=lr,
                     lambd=0.0,
                     t0=0,
                     weight_decay=weight_decay,
                 )
                 c_optimizer.optimizer = optimizer
 
-        # Switched to ASGD, no scheduling
+        # Switched to ASGD
         else:
+            # Set weights to running average
             tmp = {}
             for prm in model.parameters():
                 tmp[prm] = prm.data.clone()
                 prm.data = optimizer.state[prm]["ax"].clone()
 
+            # Perform evaluation
             metrics_values, loss = validation_round(
                 val_set,
                 model=model,
@@ -259,9 +268,7 @@ def train_loop(
         is_best = record_validation_stats(
             metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
         )
-        checkpointer.save(
-            tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
-        )
+        checkpointer.save(tracker, model, optimizer, None, is_best)
         if tracker.goal_reached:
             print("Goal Reached!")
             dist.barrier()
