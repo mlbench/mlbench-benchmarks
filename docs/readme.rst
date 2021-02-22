@@ -31,7 +31,7 @@ Task 1: Image Classification
 
 .. include:: ../pytorch/imagerecognition/cifar10-resnet20-all-reduce/Readme.rst
 
-.. include:: ../pytorch/imagerecognition/cifar10-resnet20-distributed-data-parallel/Readme.rst
+.. include:: ../pytorch/imagerecognition/cifar10-resnet20-ddp/Readme.rst
 
 1b. Resnet-?, ImageNet
 ^^^^^^^^^^^^^^^^^^^^^^
