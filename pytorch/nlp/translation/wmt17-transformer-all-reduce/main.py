@@ -357,7 +357,6 @@ def train_loop(
                 model,
                 optimizer,
                 scheduler,
-                tracker.current_epoch,
                 is_best,
             )
             tracker.epoch_end()

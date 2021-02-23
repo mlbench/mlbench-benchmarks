@@ -1,3 +1,2 @@
-mlbench-core[torch]==2.4.0.dev301
+mlbench-core[torch]==3.0.0.dev13
 mosestokenizer==1.1.0
-sacrebleu==1.4.3

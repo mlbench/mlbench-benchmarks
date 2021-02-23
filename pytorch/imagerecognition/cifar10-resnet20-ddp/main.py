@@ -203,9 +203,7 @@ def train_loop(
                 metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
             )
 
-            checkpointer.save(
-                tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
-            )
+            checkpointer.save(tracker, model, optimizer, scheduler, is_best)
 
             if tracker.goal_reached:
                 print("Goal Reached!")

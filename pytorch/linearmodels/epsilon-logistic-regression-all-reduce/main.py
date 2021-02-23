@@ -224,9 +224,7 @@ def train_loop(
             is_best = record_validation_stats(
                 metrics_values=metrics_values, loss=loss, tracker=tracker, rank=rank
             )
-            checkpointer.save(
-                tracker, model, optimizer, scheduler, tracker.current_epoch, is_best
-            )
+            checkpointer.save(tracker, model, optimizer, scheduler, is_best)
             if tracker.goal_reached:
                 print("Goal Reached!")
                 dist.barrier()

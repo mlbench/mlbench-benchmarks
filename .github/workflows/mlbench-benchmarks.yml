@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       IMAGE_NAME: pytorch-cifar10-resnet20-ddp
-      IMAGE_DIR: ./pytorch/imagerecognition/cifar10-resnet20-distributed-data-parallel
+      IMAGE_DIR: ./pytorch/imagerecognition/cifar10-resnet20-ddp
     steps:
       - uses: actions/checkout@v2
       - name: "Build image"

@@ -1,2 +1,1 @@
-mlbench-core[torch]==2.4.0.dev300
-sacrebleu==1.4.10
+mlbench-core[torch]==3.0.0.dev13

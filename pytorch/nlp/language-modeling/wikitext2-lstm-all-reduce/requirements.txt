@@ -1,1 +1,1 @@
-mlbench-core[torch]==2.4.0.dev308
+mlbench-core[torch]==3.0.0.dev13
