@@ -1,5 +1,5 @@
 # Cuda 10.1.243 Base image, CUDNN 7.6.5.32, NCCL 2708
-FROM nvidia/cuda:10.1-cudnn7-devel-ubuntu16.04 as mlbench-worker-base
+FROM nvidia/cuda:11.1-cudnn8-devel-ubuntu16.04 as mlbench-worker-base
 
 ENV PYTHON_VERSION=3.7
 
@@ -95,12 +95,12 @@ RUN conda install -y python=$PYTHON_VERSION numpy pyyaml scipy mkl mkl-include n
 # Build pytorch from source 1.7.0a0
 RUN git clone --recursive https://github.com/pytorch/pytorch && \
     cd pytorch && \
-    git checkout v1.7.0 && \
+    git checkout v1.8.1 && \
     git submodule sync && \
     git submodule update --init --recursive && \
     TORCH_CUDA_ARCH_LIST="3.5 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all"  \
     NCCL_INCLUDE_DIR="/usr/include/" USE_NCCL=1 USE_SYSTEM_NCCL=1 USE_MKLDNN=1 \
-    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" PYTORCH_BUILD_VERSION=1.7.0 PYTORCH_BUILD_NUMBER=1 \
+    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" PYTORCH_BUILD_VERSION=1.8.1 PYTORCH_BUILD_NUMBER=1 \
     pip install -v .
 
 #RUN git clone https://github.com/pytorch/vision.git && cd vision && git checkout tags/v0.5.0 &&  pip install -v .
