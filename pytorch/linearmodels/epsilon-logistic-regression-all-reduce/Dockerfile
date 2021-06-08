@@ -1,4 +1,4 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.7.0
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.8.1
 
 # Add and install requirements
 ADD ./requirements.txt /requirements.txt

@@ -1,4 +1,4 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.7.0
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.8.1
 
 # -------------------- Debug --------------------
 RUN git clone https://github.com/NVIDIA/apex && cd apex && git checkout f3a960f && \
@@ -17,6 +17,8 @@ RUN pip install --no-cache-dir -r /requirements.txt
 ENV MLBENCH_INSTALL_DIR /conda/lib/python3.7/site-packages/mlbench_core
 ENV TRANSFORMER_MODULES models/pytorch/transformer/modules
 ENV STRIDED_BATCHED_GEMM strided_batched_gemm.cpython-37m-x86_64-linux-gnu.so
+
+RUN git clone https://github.com/NVIDIA/cutlass.git && cd cutlass && git checkout ed2ed4d6 && cd ..
 
 RUN python $MLBENCH_INSTALL_DIR/install_cuda_extensions.py build && \
     mv build/lib.linux-x86_64-3.7/mlbench_core/$TRANSFORMER_MODULES/$STRIDED_BATCHED_GEMM $MLBENCH_INSTALL_DIR/$TRANSFORMER_MODULES/$STRIDED_BATCHED_GEMM && \

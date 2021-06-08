@@ -1,4 +1,4 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.7.0
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.8.1
 
 # -------------------- Debug --------------------
 # RUN apt-get update && apt-get install -y vim net-tools
@@ -21,6 +21,8 @@ RUN pip install --no-cache-dir -r /requirements.txt
 ENV MLBENCH_INSTALL_DIR /conda/lib/python3.7/site-packages/mlbench_core
 ENV GNMT_MODEL models/pytorch/gnmt
 ENV ATTN_SCORE attn_score.cpython-37m-x86_64-linux-gnu.so
+
+RUN git clone https://github.com/NVIDIA/cutlass.git && cd cutlass && git checkout ed2ed4d6 && cd ..
 
 RUN python $MLBENCH_INSTALL_DIR/install_cuda_extensions.py build && \
     mv build/lib.linux-x86_64-3.7/mlbench_core/$GNMT_MODEL/$ATTN_SCORE $MLBENCH_INSTALL_DIR/$GNMT_MODEL/$ATTN_SCORE && \
