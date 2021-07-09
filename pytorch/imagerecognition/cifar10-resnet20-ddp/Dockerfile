@@ -1,4 +1,4 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.8.1
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.9.0
 
 # The reference implementation and user defined implementations are placed here.
 ADD ./requirements.txt /requirements.txt
