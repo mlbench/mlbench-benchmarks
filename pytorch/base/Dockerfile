@@ -95,12 +95,12 @@ RUN conda install -y python=$PYTHON_VERSION numpy pyyaml scipy mkl mkl-include n
 # Build pytorch from source 1.7.0a0
 RUN git clone --recursive https://github.com/pytorch/pytorch && \
     cd pytorch && \
-    git checkout v1.8.1 && \
+    git checkout v1.9.0 && \
     git submodule sync && \
     git submodule update --init --recursive && \
     TORCH_CUDA_ARCH_LIST="3.5 5.2 6.0 6.1 7.0+PTX" TORCH_NVCC_FLAGS="-Xfatbin -compress-all"  \
     NCCL_INCLUDE_DIR="/usr/include/" USE_NCCL=1 USE_SYSTEM_NCCL=1 USE_MKLDNN=1 \
-    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" PYTORCH_BUILD_VERSION=1.8.1 PYTORCH_BUILD_NUMBER=1 \
+    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" PYTORCH_BUILD_VERSION=1.9.0 PYTORCH_BUILD_NUMBER=1 \
     pip install -v .
 
 #RUN git clone https://github.com/pytorch/vision.git && cd vision && git checkout tags/v0.5.0 &&  pip install -v .

@@ -1,4 +1,4 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.8.1
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.9.0
 
 # -------------------- Debug --------------------
 # RUN apt-get update && apt-get install -y vim net-tools

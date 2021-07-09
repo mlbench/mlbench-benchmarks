@@ -1,4 +1,4 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.8.1
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.9.0
 
 #RUN HOROVOD_GPU_ALLREDUCE=MPI HOROVOD_GPU_BROADCAST=MPI \
 #    HOROVOD_WITH_PYTORCH=1\

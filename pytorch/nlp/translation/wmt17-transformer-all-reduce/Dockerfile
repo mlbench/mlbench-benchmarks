@@ -1,4 +1,4 @@
-FROM mlbench/mlbench-pytorch-base:pytorch-v1.8.1
+FROM mlbench/mlbench-pytorch-base:pytorch-v1.9.0
 
 # -------------------- Debug --------------------
 RUN git clone https://github.com/NVIDIA/apex && cd apex && git checkout f3a960f && \
