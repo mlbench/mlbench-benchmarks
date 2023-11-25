@@ -1,4 +1,4 @@
-FROM nvidia/cuda:9.0-cudnn7-devel-ubuntu16.04 as mlbench-worker-base
+FROM tensorflow/tensorflow:latest-py3 as mlbench-worker-base-cpu
 # TODO: reduce size and complexity of image.
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,16 +27,8 @@ RUN mkdir -p /.sshd/user_keys/$SSH_USER && \
   chown -R $SSH_USER:$SSH_USER /.sshd/user_keys/$SSH_USER && chmod 700 /.sshd/user_keys/$SSH_USER
 VOLUME /ssh-key/$SSH_USER
 
-# -----–––---------------------- Cuda Dependency --------------------
-RUN echo "deb http://developer.download.nvidia.com/compute/machine-learning/repos/ubuntu1604/x86_64 /" > /etc/apt/sources.list.d/nvidia-ml.list
-RUN apt-get update && apt-get install -y --no-install-recommends --allow-downgrades \
-        --allow-change-held-packages \
-         libnccl2=2.0.5-3+cuda9.0 \
-         libnccl-dev=2.0.5-3+cuda9.0 &&\
-     rm -rf /var/lib/apt/lists/*
-
 # -------------------- Conda environment --------------------
-RUN curl -o ~/miniconda.sh -LO  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  && \
+RUN curl -o ~/miniconda.sh -O  https://repo.continuum.io/miniconda/Miniconda3-4.5.4-Linux-x86_64.sh  && \
      sh ~/miniconda.sh -b -p /conda && rm ~/miniconda.sh
 ENV PATH /conda/bin:$PATH
 ENV LD_LIBRARY_PATH /conda/lib:$LD_LIBRARY_PATH
@@ -54,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget \
     && wget https://www.open-mpi.org/software/ompi/v3.0/downloads/openmpi-3.0.0.tar.gz\
     && gunzip -c openmpi-3.0.0.tar.gz | tar xf - \
     && cd openmpi-3.0.0 \
-    && ./configure --prefix=/.openmpi/ --with-cuda\
+    && ./configure --prefix=/.openmpi/ \
     && make all install \
     && rm /openmpi-3.0.0.tar.gz \
     && rm -rf /openmpi-3.0.0 \
@@ -80,7 +72,7 @@ RUN echo export 'LD_LIBRARY_PATH=$HOME/.openmpi/lib:$LD_LIBRARY_PATH' >> ~/.bash
 
 RUN conda install -y -c conda-forge mpi4py
 # -------------------- TensorFlow Related --------------------
-RUN pip install tensorflow-gpu
+RUN conda install tensorflow
 
 # -------------------- Others --------------------
 RUN echo "orte_keep_fqdn_hostnames=t" >> /.openmpi/etc/openmpi-mca-params.conf

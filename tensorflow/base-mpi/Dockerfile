@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends --allow-downgra
      rm -rf /var/lib/apt/lists/*
 
 # -------------------- Conda environment --------------------
-RUN curl -o ~/miniconda.sh -LO  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  && \
+RUN curl -o ~/miniconda.sh -O  https://repo.continuum.io/miniconda/Miniconda3-4.5.4-Linux-x86_64.sh  && \
      sh ~/miniconda.sh -b -p /conda && rm ~/miniconda.sh
 ENV PATH /conda/bin:$PATH
 ENV LD_LIBRARY_PATH /conda/lib:$LD_LIBRARY_PATH
@@ -79,8 +79,35 @@ RUN echo export 'PATH=$HOME/conda/envs/pytorch-py$PYTHON_VERSION/bin:$HOME/.open
 RUN echo export 'LD_LIBRARY_PATH=$HOME/.openmpi/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
 
 RUN conda install -y -c conda-forge mpi4py
-# -------------------- TensorFlow Related --------------------
-RUN pip install tensorflow-gpu
+
+# -------- Build Tensorflow with MPI support------
+# source install instructions https://www.tensorflow.org/install/source
+# pip six numpy wheel setuptools already installed
+RUN pip install mock && \
+    pip install keras_applications==1.0.6 --no-deps && \
+    pip install keras_preprocessing==1.0.5 --no-deps
+
+# install bazel
+RUN echo "deb [arch=amd64] http://storage.googleapis.com/bazel-apt stable jdk1.8" | sudo tee /etc/apt/sources.list.d/bazel.list && \
+    curl https://bazel.build/bazel-release.pub.gpg | sudo apt-key add - && \
+    apt-get update && apt-get -y install bazel && \
+    apt-get install --only-upgrade bazel
+
+# clone tensorflow repo
+WORKDIR /tmp
+RUN git clone https://github.com/tensorflow/tensorflow.git
+
+# configure for CUDA 9.0 with mpi
+WORKDIR /tmp/tensorflow
+RUN echo '\n''\n'n'\n''\n'N'\n'y'\n'9'\n''\n''\n''\n'N'\n''\n''\n'N'\n''\n'y'\n''\n''\n'N'\n' | ./configure
+
+# build package with bazel
+RUN bazel build --config=opt --config=cuda //tensorflow/tools/pip_package:build_pip_package && \
+    ./bazel-bin/tensorflow/tools/pip_package/build_pip_package /tmp/tensorflow_pkg
+
+# install with pip
+RUN TFLOW_PKG_VER=$(ls /tmp/tensorflow_pkg/) && \
+    pip install /tmp/tensorflow_pkg/$TFLOW_PKG_VER
 
 # -------------------- Others --------------------
 RUN echo "orte_keep_fqdn_hostnames=t" >> /.openmpi/etc/openmpi-mca-params.conf
@@ -91,6 +118,8 @@ RUN chmod a+x /usr/local/bin/entrypoint.sh
 # Copy your application code to the container (make sure you create a .dockerignore file if any large files or directories should be excluded)
 RUN mkdir /app/
 WORKDIR /app/
+RUN git clone https://github.com/mlbench/mlbench-benchmarks.git
+RUN pip install -r /app/mlbench-benchmarks/tensorflow/imagerecognition/openmpi-cifar10-resnet20-all-reduce/requirements.txt
 
 EXPOSE 22
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
